@@ -122,6 +122,10 @@ async def wrap_cli_request(
     """
     将 Gemini 格式请求包装成 Antigravity CLI 格式。
     返回 (payload, request_id)。
+
+    userAgent 字段（值 "antigravity"）对齐官方 v1internal
+    GenerateContentRequest proto 的可选字段 user_agent，曾于 0d0972e
+    移除、现按官方 proto 描述符证据恢复。
     """
     # 浅拷贝 + 只重建需要修改的层（toolConfig/functionCallingConfig），
     # 避免对大 payload（长对话历史）做整体 deepcopy 的热路径开销；
@@ -159,6 +163,7 @@ async def wrap_cli_request(
         "requestId": request_id,
         "request": inner,
         "model": model,
+        "userAgent": "antigravity",
         "requestType": "agent",
     }
     return payload, request_id
@@ -170,15 +175,20 @@ def build_antigravity_headers(
     access_token: str,
     extra_headers: Optional[Dict[str, str]] = None,
     purpose: Optional[str] = None,
+    streaming: bool = False,
 ) -> Dict[str, str]:
     """构建 Antigravity CLI API 请求头。
 
-    头部集合对齐官方 CLI v1.5.16 实测抓包：
+    头部集合对齐官方 CLI v1.5.16 逆向证据（rodata 字符串 + proto 描述符）：
     User-Agent / Authorization / Content-Type / Accept-Encoding(gzip)。
+
+    streaming=True 时补发 Accept 头（官方二进制在 SSE 流腿携带
+    "application/json, text/event-stream"，见 rodata 证据串）；
+    非流式请求官方不发送 Accept。
 
     说明：requestId 与 requestType 是 v1internal 载荷内的 proto 字段而非
     HTTP 头，官方客户端不在头部发送它们（此前实现属于指纹偏差，已移除）；
-    Connection 与 Accept 官方亦不发送，连接行为由传输层自行协商。
+    Connection 官方亦不发送，连接行为由传输层自行协商。
     """
     headers = {
         "User-Agent": get_antigravity_user_agent(purpose=purpose),
@@ -186,6 +196,8 @@ def build_antigravity_headers(
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip",
     }
+    if streaming:
+        headers["Accept"] = "application/json, text/event-stream"
 
     for key, value in _sanitize_antigravity_headers(extra_headers).items():
         headers.setdefault(key, value)
@@ -369,7 +381,8 @@ async def stream_request(
     # 2. 构建URL和请求头（端点来自配置，支持面板热更新）
     target_url = f"{await get_antigravity_api_url()}/v1internal:streamGenerateContent?alt=sse"
 
-    auth_headers = build_antigravity_headers(access_token, headers)
+    # 流式请求携带官方 SSE Accept 头（对齐官方 CLI 逆向证据）
+    auth_headers = build_antigravity_headers(access_token, headers, streaming=True)
 
     # 构建 CLI 格式请求体
     inner_request = body.get("request", body)
