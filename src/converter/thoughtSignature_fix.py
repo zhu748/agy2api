@@ -31,28 +31,6 @@ def is_skip_thought_signature_placeholder(part: Mapping[str, Any]) -> bool:
     return is_internal_placeholder_text(part.get("text"))
 
 
-def encode_tool_id_with_signature(tool_id: str, signature: Optional[str]) -> str:
-    """
-    将 thoughtSignature 编码到工具调用ID中，以便往返保留。
-
-    Args:
-        tool_id: 原始工具调用ID
-        signature: thoughtSignature（可选）
-
-    Returns:
-        编码后的工具调用ID
-
-    Examples:
-        >>> encode_tool_id_with_signature("call_123", "abc")
-        'call_123__thought__abc'
-        >>> encode_tool_id_with_signature("call_123", None)
-        'call_123'
-    """
-    if not signature:
-        return tool_id
-    return f"{tool_id}{THOUGHT_SIGNATURE_SEPARATOR}{signature}"
-
-
 def decode_tool_id_and_signature(encoded_id: str) -> Tuple[str, Optional[str]]:
     """
     从编码的ID中提取原始工具ID和thoughtSignature。

@@ -28,7 +28,7 @@ from src.credential_manager import (
 )
 from src.httpx_client import stream_post_async, post_async
 from src.models import Model, model_to_dict
-from src.utils import ANTIGRAVITY_USER_AGENT
+from src.utils import get_antigravity_user_agent
 from src.session_cache import derive_session_key
 from src.usage_log import (
     extract_usage_tokens,
@@ -169,28 +169,26 @@ async def wrap_cli_request(
 def build_antigravity_headers(
     access_token: str,
     extra_headers: Optional[Dict[str, str]] = None,
-    model_name: str = "",
+    purpose: Optional[str] = None,
 ) -> Dict[str, str]:
-    """构建 Antigravity CLI API 请求头。"""
+    """构建 Antigravity CLI API 请求头。
+
+    头部集合对齐官方 CLI v1.5.16 实测抓包：
+    User-Agent / Authorization / Content-Type / Accept-Encoding(gzip)。
+
+    说明：requestId 与 requestType 是 v1internal 载荷内的 proto 字段而非
+    HTTP 头，官方客户端不在头部发送它们（此前实现属于指纹偏差，已移除）；
+    Connection 与 Accept 官方亦不发送，连接行为由传输层自行协商。
+    """
     headers = {
-        "User-Agent": ANTIGRAVITY_USER_AGENT,
+        "User-Agent": get_antigravity_user_agent(purpose=purpose),
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "Accept": "*/*",
         "Accept-Encoding": "gzip",
-        "Connection": "close",
-        "requestId": f"req-{uuid.uuid4()}",
     }
 
     for key, value in _sanitize_antigravity_headers(extra_headers).items():
         headers.setdefault(key, value)
-
-    # 根据模型名称判断 request_type
-    if model_name:
-        if "image" in model_name.lower():
-            headers["requestType"] = "image_gen"
-        else:
-            headers["requestType"] = "agent"
 
     return headers
 
@@ -371,7 +369,7 @@ async def stream_request(
     # 2. 构建URL和请求头（端点来自配置，支持面板热更新）
     target_url = f"{await get_antigravity_api_url()}/v1internal:streamGenerateContent?alt=sse"
 
-    auth_headers = build_antigravity_headers(access_token, headers, model_name)
+    auth_headers = build_antigravity_headers(access_token, headers)
 
     # 构建 CLI 格式请求体
     inner_request = body.get("request", body)
@@ -727,7 +725,7 @@ async def non_stream_request(
     # 2. 构建URL和请求头（端点来自配置，支持面板热更新）
     target_url = f"{await get_antigravity_api_url()}/v1internal:generateContent"
 
-    auth_headers = build_antigravity_headers(access_token, headers, model_name)
+    auth_headers = build_antigravity_headers(access_token, headers)
 
     # 构建 CLI 格式请求体
     inner_request = body.get("request", body)
@@ -970,8 +968,10 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
         log.error(f"[ANTIGRAVITY] No access token in credential: {current_file}")
         return []
 
-    # 构建请求头
-    headers = build_antigravity_headers(access_token, model_name="agent")
+    # 构建请求头（模型可用性探测请求携带专用 purpose，对齐官方 UA 行为）
+    headers = build_antigravity_headers(
+        access_token, purpose="antigravity-model-availability-probe"
+    )
 
     try:
         # 使用 POST 请求获取模型列表
@@ -1063,7 +1063,7 @@ async def fetch_quota_info(access_token: str, project_id: str = "") -> Dict[str,
         }
     """
 
-    headers = build_antigravity_headers(access_token, model_name="agent")
+    headers = build_antigravity_headers(access_token)
 
     url = f"{await get_antigravity_api_url()}/v1internal:retrieveUserQuotaSummary"
     payload: Dict[str, Any] = {}

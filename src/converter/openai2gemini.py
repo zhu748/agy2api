@@ -93,17 +93,6 @@ def _convert_usage_metadata(usage_metadata: Dict[str, Any]) -> Optional[Dict[str
     return usage
 
 
-def _build_message_with_reasoning(role: str, content: str, reasoning_content: str) -> dict:
-    """构建包含可选推理内容的消息对象"""
-    message = {"role": role, "content": content}
-
-    # 如果有thinking tokens，添加reasoning_content
-    if reasoning_content:
-        message["reasoning_content"] = reasoning_content
-
-    return message
-
-
 def _map_finish_reason(gemini_reason: str) -> str:
     """
     将Gemini结束原因映射到OpenAI结束原因
@@ -1100,43 +1089,6 @@ def extract_tool_calls_from_parts(
             text_content += text
 
     return tool_calls, text_content
-
-
-def extract_images_from_content(content: Any) -> Dict[str, Any]:
-    """
-    从 OpenAI content 中提取文本和图片
-    
-    Args:
-        content: OpenAI 消息的 content 字段（可能是字符串或列表）
-    
-    Returns:
-        包含 text 和 images 的字典
-    """
-    result = {"text": "", "images": []}
-
-    if isinstance(content, str):
-        result["text"] = content
-    elif isinstance(content, list):
-        for item in content:
-            if isinstance(item, dict):
-                if item.get("type") == "text":
-                    result["text"] += item.get("text", "")
-                elif item.get("type") == "image_url":
-                    image_url = item.get("image_url", {}).get("url", "")
-                    # 解析 data:image/png;base64,xxx 格式
-                    if image_url.startswith("data:image/"):
-                        match = re.match(r"^data:image/(\w+);base64,(.+)$", image_url)
-                        if match:
-                            mime_type = match.group(1)
-                            base64_data = match.group(2)
-                            result["images"].append({
-                                "inlineData": {
-                                    "mimeType": f"image/{mime_type}",
-                                    "data": base64_data
-                                }
-                            })
-
-    return result
 
 
 def _sanitize_openai_roundtrip_signatures(contents: List[Dict[str, Any]]) -> None:

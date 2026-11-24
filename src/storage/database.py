@@ -182,7 +182,6 @@ class Database:
 
         # 内存配置缓存
         self._config_cache: Dict[str, Any] = {}
-        self._config_loaded = False
 
     # ---------- 初始化 ----------
 
@@ -297,10 +296,6 @@ class Database:
         self._session_factory = None
         self._initialized = False
         log.debug("Database closed")
-
-    @property
-    def backend_type(self) -> str:
-        return self._backend_type
 
     def _ensure_initialized(self):
         if not self._initialized or not self._session_factory:
@@ -510,26 +505,6 @@ class Database:
                 "project_id": row.project_id or "",
             }
 
-    async def get_all_credential_states(self) -> Dict[str, Dict[str, Any]]:
-        """获取所有凭证状态（自动过滤过期CD）"""
-        current_time = time.time()
-        async with self.session() as s:
-            rows = (await s.scalars(select(AntigravityCredential))).all()
-            states = {}
-            for row in rows:
-                cooldowns = _load_json(row.model_cooldowns, {})
-                cooldowns = {k: v for k, v in cooldowns.items() if v > current_time}
-                states[row.email] = {
-                    "disabled": bool(row.disabled),
-                    "error_codes": _load_json(row.error_codes, []),
-                    "last_success": row.last_success or time.time(),
-                    "email": row.email,
-                    "model_cooldowns": cooldowns,
-                    "tier": row.tier or "pro",
-                    "project_id": row.project_id or "",
-                }
-            return states
-
     async def get_credentials_summary(
         self,
         offset: int = 0,
@@ -624,21 +599,6 @@ class Database:
                 },
             }
 
-    async def get_duplicate_credentials_by_email(self) -> Dict[str, Any]:
-        """按邮箱分组的重复凭证（email 即唯一键，此结构保留用于展示统计）"""
-        async with self.session() as s:
-            rows = (await s.scalars(select(AntigravityCredential).order_by(AntigravityCredential.id))).all()
-            emails = [row.email for row in rows]
-            return {
-                "email_groups": {},
-                "duplicate_groups": [],
-                "duplicate_count": 0,
-                "no_email_files": [],
-                "no_email_count": 0,
-                "unique_email_count": len(emails),
-                "total_count": len(rows),
-            }
-
     async def get_credential_errors(self, email: str) -> Dict[str, Any]:
         """获取凭证的错误信息"""
         async with self.session() as s:
@@ -675,18 +635,6 @@ class Database:
             else:
                 cooldowns[cd_group] = cooldown_until
             row.model_cooldowns = _dump_json(cooldowns)
-            row.updated_at = time.time()
-            return True
-
-    async def clear_all_model_cooldowns(self, email: str) -> bool:
-        """清除某凭证的所有模型冷却"""
-        async with self.session() as s:
-            row = await s.scalar(
-                select(AntigravityCredential).where(AntigravityCredential.email == email)
-            )
-            if not row:
-                return False
-            row.model_cooldowns = "{}"
             row.updated_at = time.time()
             return True
 
@@ -728,7 +676,6 @@ class Database:
                     self._config_cache[item.key] = json.loads(item.value)
                 except (json.JSONDecodeError, TypeError):
                     self._config_cache[item.key] = item.value
-            self._config_loaded = True
             log.debug(f"Loaded {len(self._config_cache)} config items")
 
     async def reload_config_cache(self) -> None:
@@ -750,22 +697,9 @@ class Database:
             self._config_cache[key] = value
             return True
 
-    async def get_config(self, key: str, default: Any = None) -> Any:
-        self._ensure_initialized()
-        return self._config_cache.get(key, default)
-
     async def get_all_config(self) -> Dict[str, Any]:
         self._ensure_initialized()
         return self._config_cache.copy()
-
-    async def delete_config(self, key: str) -> bool:
-        async with self.session() as s:
-            item = await s.get(ConfigItem, key)
-            if item:
-                await s.delete(item)
-                self._config_cache.pop(key, None)
-                return True
-            return False
 
     # ---------- 请求日志（usage_log） ----------
 
@@ -953,20 +887,6 @@ class Database:
                 {"ts": before_timestamp},
             )
             return result.rowcount or 0
-
-    # ---------- 后端信息 ----------
-
-    def get_backend_info(self) -> Dict[str, Any]:
-        return {
-            "backend_type": self._backend_type,
-            "initialized": self._initialized,
-            "database_path": (
-                os.path.join(os.getenv("CREDENTIALS_DIR", "./creds"), "credentials.db")
-                if self._backend_type == "sqlite"
-                else None
-            ),
-            "credentials_dir": os.getenv("CREDENTIALS_DIR", "./creds"),
-        }
 
 
 # ====================== 全局单例 ======================

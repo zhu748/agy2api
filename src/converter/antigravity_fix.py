@@ -655,11 +655,6 @@ def resolve_profile(model: str) -> ModelProfile:
 
 # ==================== 模型特性辅助函数 ====================
 
-def is_thinking_model(model_name: str) -> bool:
-    """检查是否为思考模型 (模型名包含 think，仅为兼容保留)"""
-    return "think" in model_name.lower()
-
-
 def _apply_thinking(profile: ModelProfile, generation_config: Dict[str, Any], return_thoughts: bool) -> None:
     """按模型 profile 写入 thinkingConfig (就地修改 generation_config，thinkingConfig 先复制)"""
     if profile.thinking == "none":

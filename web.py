@@ -6,6 +6,11 @@ Main Web Integration - Integrates all routers and modules
 import os
 from contextlib import asynccontextmanager
 
+# 加载项目根目录的 .env（须在导入 src.utils 等读取环境变量的模块之前执行）
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse

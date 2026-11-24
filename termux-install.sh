@@ -19,7 +19,7 @@ HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
 SVDIR="${SVDIR:-$PREFIX/var/service}"
 LOG_DIR="${LOG_DIR:-$PREFIX/var/log/sv/agy2api}"
 SERVICE="agy2api"
-REPO_URL="https://github.com/Annaabdullayeva/agy2api.git"
+REPO_URL="https://github.com/zhu748/agy2api.git"
 DEFAULT_DIR="$HOME_DIR/agy2api"
 MIN_RUST="1.80"
 

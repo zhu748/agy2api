@@ -2,13 +2,13 @@
 Google OAuth2 认证模块
 """
 
-import time
 import asyncio
+import base64
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
-
-import jwt
 
 from config import (
     get_googleapis_proxy_url,
@@ -43,10 +43,6 @@ class Credentials:
         self.client_secret = client_secret
         self.expires_at = expires_at
         self.project_id = project_id
-
-        # 反代配置将在使用时异步获取
-        self.oauth_base_url = None
-        self.token_endpoint = None
 
     def is_expired(self) -> bool:
         """检查token是否过期"""
@@ -176,15 +172,26 @@ class Flow:
         self.scopes = scopes
         self.redirect_uri = redirect_uri
 
-        # 反代配置将在使用时异步获取
-        self.oauth_base_url = None
-        self.token_endpoint = None
         self.auth_endpoint = "https://accounts.google.com/o/oauth2/auth"
 
         self.credentials: Optional[Credentials] = None
+        # PKCE（对齐官方 CLI 授权请求：code_challenge_method=S256）
+        self.code_verifier: Optional[str] = None
+
+    def _generate_pkce_pair(self) -> Tuple[str, str]:
+        """生成 PKCE code_verifier / S256 code_challenge"""
+        verifier = secrets.token_urlsafe(64)[:128]
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode("ascii")).digest()
+        ).rstrip(b"=").decode("ascii")
+        return verifier, challenge
 
     def get_auth_url(self, state: str = None, **kwargs) -> str:
-        """生成授权URL"""
+        """生成授权URL（含 PKCE S256，对齐官方 CLI 的授权请求参数集）"""
+        # 每次生成授权 URL 都重新生成 PKCE 配对（换取时使用最新一份）
+        verifier, challenge = self._generate_pkce_pair()
+        self.code_verifier = verifier
+
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
@@ -192,7 +199,8 @@ class Flow:
             "response_type": "code",
             "access_type": "offline",
             "prompt": "consent",
-            "include_granted_scopes": "true",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
         }
 
         if state:
@@ -210,6 +218,8 @@ class Flow:
             "code": code,
             "grant_type": "authorization_code",
         }
+        if self.code_verifier:
+            data["code_verifier"] = self.code_verifier
 
         try:
             oauth_base_url = await get_oauth_proxy_url()
@@ -242,88 +252,6 @@ class Flow:
             error_msg = f"获取token失败: {str(e)}"
             log.error(error_msg)
             raise TokenError(error_msg)
-
-
-class ServiceAccount:
-    """Service Account类"""
-
-    def __init__(
-        self, email: str, private_key: str, project_id: str = None, scopes: List[str] = None
-    ):
-        self.email = email
-        self.private_key = private_key
-        self.project_id = project_id
-        self.scopes = scopes or []
-
-        # 反代配置将在使用时异步获取
-        self.oauth_base_url = None
-        self.token_endpoint = None
-
-        self.access_token: Optional[str] = None
-        self.expires_at: Optional[datetime] = None
-
-    def is_expired(self) -> bool:
-        """检查token是否过期"""
-        if not self.expires_at:
-            return True
-
-        buffer = timedelta(minutes=3)
-        return (self.expires_at - buffer) <= datetime.now(timezone.utc)
-
-    def create_jwt(self) -> str:
-        """创建JWT令牌"""
-        now = int(time.time())
-
-        payload = {
-            "iss": self.email,
-            "scope": " ".join(self.scopes) if self.scopes else "",
-            "aud": self.token_endpoint,
-            "exp": now + 3600,
-            "iat": now,
-        }
-
-        return jwt.encode(payload, self.private_key, algorithm="RS256")
-
-    async def get_access_token(self) -> str:
-        """获取访问令牌"""
-        if not self.is_expired() and self.access_token:
-            return self.access_token
-
-        assertion = self.create_jwt()
-
-        data = {"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion}
-
-        try:
-            oauth_base_url = await get_oauth_proxy_url()
-            token_url = f"{oauth_base_url.rstrip('/')}/token"
-            response = await post_async(
-                token_url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
-            )
-            response.raise_for_status()
-
-            token_data = response.json()
-            self.access_token = token_data["access_token"]
-
-            if "expires_in" in token_data:
-                expires_in = int(token_data["expires_in"])
-                self.expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-            return self.access_token
-
-        except Exception as e:
-            error_msg = f"Service Account获取token失败: {str(e)}"
-            log.error(error_msg)
-            raise TokenError(error_msg)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any], scopes: List[str] = None) -> "ServiceAccount":
-        """从字典创建Service Account凭证"""
-        return cls(
-            email=data["client_email"],
-            private_key=data["private_key"],
-            project_id=data.get("project_id"),
-            scopes=scopes,
-        )
 
 
 # 工具函数
@@ -366,37 +294,6 @@ async def get_user_email(credentials: Credentials) -> Optional[str]:
 
     except Exception as e:
         log.error(f"获取用户邮箱失败: {e}")
-        return None
-
-
-async def fetch_user_email_from_file(cred_data: Dict[str, Any]) -> Optional[str]:
-    """从凭证数据获取用户邮箱地址（支持统一存储）"""
-    try:
-        # 直接从凭证数据创建凭证对象
-        credentials = Credentials.from_dict(cred_data)
-        if not credentials or not credentials.access_token:
-            log.warning("无法从凭证数据创建凭证对象或获取访问令牌")
-            return None
-
-        # 获取邮箱
-        return await get_user_email(credentials)
-
-    except Exception as e:
-        log.error(f"从凭证数据获取用户邮箱失败: {e}")
-        return None
-
-
-async def validate_token(token: str) -> Optional[Dict[str, Any]]:
-    """验证访问令牌"""
-    try:
-        oauth_base_url = await get_oauth_proxy_url()
-        tokeninfo_url = f"{oauth_base_url.rstrip('/')}/tokeninfo?access_token={token}"
-
-        response = await get_async(tokeninfo_url)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        log.error(f"验证令牌失败: {e}")
         return None
 
 

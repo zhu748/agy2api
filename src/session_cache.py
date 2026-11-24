@@ -225,8 +225,3 @@ def _cleanup_expired_locked() -> None:
     expired = [k for k, (_, exp) in _memory_store.items() if now >= exp]
     for k in expired:
         _memory_store.pop(k, None)
-
-
-def memory_store_size() -> int:
-    """内存后端条目数（诊断用）"""
-    return len(_memory_store)

@@ -244,29 +244,12 @@ export default function Config() {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
-  // 一键镜像/官方端点（墙内访问 Google 官方端点的反代方案）
-  const MIRROR_BASE = "https://gcli-api.sukaka.top";
+  // 官方端点快捷还原（原第三方镜像端点已随安全清理移除）
   const OFFICIAL_ENDPOINTS = {
     oauth_proxy_url: "https://oauth2.googleapis.com",
     googleapis_proxy_url: "https://www.googleapis.com",
     antigravity_api_url: "https://daily-cloudcode-pa.googleapis.com",
   };
-  const MIRROR_PATHS = {
-    oauth_proxy_url: "/oauth2",
-    googleapis_proxy_url: "/googleapis",
-    antigravity_api_url: "/daily-cloudcode-pa",
-  };
-
-  const useMirrorUrls = () => {
-    setConfig((prev) => {
-      const next = { ...prev };
-      for (const [key, path] of Object.entries(MIRROR_PATHS)) {
-        if (!envLocked.includes(key)) next[key] = MIRROR_BASE + path;
-      }
-      return next;
-    });
-  };
-
   const restoreOfficialUrls = () => {
     setConfig((prev) => {
       const next = { ...prev };
@@ -471,13 +454,6 @@ export default function Config() {
 
               {group.title === "端点配置" && (
                 <div className="flex flex-wrap gap-2 mb-4">
-                  <button
-                    type="button"
-                    onClick={useMirrorUrls}
-                    className="btn btn-secondary text-xs px-3 py-1.5"
-                  >
-                    🚀 一键使用镜像网址
-                  </button>
                   <button
                     type="button"
                     onClick={restoreOfficialUrls}

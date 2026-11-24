@@ -4,7 +4,6 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](../LICENSE)
-[![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/su-kaka/agy2api/pkgs/container/agy2api)
 
 [中文](../README.md) | English | [日本語](./README_JA.md)
 
@@ -16,7 +15,7 @@
 
 **Initial Installation**
 ```bash
-curl -o termux-install.sh "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/termux-install.sh" && chmod +x termux-install.sh && ./termux-install.sh
+curl -o termux-install.sh "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/termux-install.sh" && chmod +x termux-install.sh && ./termux-install.sh
 ```
 
 **Restart Service**
@@ -29,7 +28,7 @@ bash termux-start.sh
 
 **Initial Installation**
 ```powershell
-iex (iwr "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/install.ps1" -UseBasicParsing).Content
+iex (iwr "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/install.ps1" -UseBasicParsing).Content
 ```
 
 **Restart Service**
@@ -39,7 +38,7 @@ Double-click to execute `start.bat`
 
 **Initial Installation**
 ```bash
-curl -o install.sh "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/install.sh" && chmod +x install.sh && ./install.sh
+curl -o install.sh "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/install.sh" && chmod +x install.sh && ./install.sh
 ```
 
 **Restart Service**
@@ -52,7 +51,7 @@ bash start.sh
 
 **Initial Installation**
 ```bash
-curl -o darwin-install.sh "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/darwin-install.sh" && chmod +x darwin-install.sh && ./darwin-install.sh
+curl -o darwin-install.sh "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/darwin-install.sh" && chmod +x darwin-install.sh && ./darwin-install.sh
 ```
 
 **Restart Service**
@@ -65,7 +64,7 @@ bash start.sh
 
 **Docker Run Command**
 ```bash
-docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PASSWORD=panel_pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds -v $(pwd)/data/request_logs:/app/data/request_logs ghcr.io/su-kaka/agy2api:latest
+docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PASSWORD=panel_pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds -v $(pwd)/data/request_logs:/app/data/request_logs agy2api:latest
 ```
 
 **Docker Mac**
@@ -79,7 +78,7 @@ docker run -d \
   -e PORT=7861 \
   -v "$(pwd)/data/creds":/app/creds \
   -v "$(pwd)/data/request_logs":/app/data/request_logs \
-  ghcr.io/su-kaka/agy2api:latest
+  agy2api:latest
 ```
 
 **Docker Compose Run Command**
@@ -89,7 +88,7 @@ docker run -d \
 
     services:
       agy2api:
-        image: ghcr.io/su-kaka/agy2api:latest
+        image: agy2api:latest
         container_name: agy2api
         restart: unless-stopped
         network_mode: host
@@ -373,7 +372,7 @@ docker run -d --name agy2api \
   -e API_PASSWORD=my_api_password \
   -e PANEL_PASSWORD=my_panel_password \
   -e PORT=7861 \
-  ghcr.io/su-kaka/agy2api:latest
+  agy2api:latest
 ```
 
 ### API Usage Methods

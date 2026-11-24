@@ -319,10 +319,8 @@ def clean_json_schema(schema: Any) -> Any:
             continue
 
         if key == "type" and isinstance(value, list):
-            # type: ["string", "null"] -> type: "string", nullable: true
-            has_null = any(
-                isinstance(t, str) and t.strip() and t.strip().lower() == "null" for t in value
-            )
+            # 例子：type 为 ["string", "null"] 时改写为 type: "string" + nullable: true
+            # （不要以 "# type:" 开头书写本注释，该前缀会被按类型注解语法解析）
             non_null_types = [
                 t.strip()
                 for t in value
@@ -423,15 +421,12 @@ def _extract_tool_result_output(content: Any) -> str:
 
 def convert_messages_to_contents(
     messages: List[Dict[str, Any]],
-    *,
-    include_thinking: bool = True
 ) -> List[Dict[str, Any]]:
     """
     将 Anthropic messages[] 转换为下游 contents[]（role: user/model, parts: []）。
 
     Args:
         messages: Anthropic 格式的消息列表
-        include_thinking: 是否包含 thinking 块
     """
     contents: List[Dict[str, Any]] = []
 
@@ -758,7 +753,7 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
     generation_config = build_generation_config(payload)
 
     # 转换消息内容（始终包含thinking块，由响应端处理）
-    contents = convert_messages_to_contents(messages, include_thinking=True)
+    contents = convert_messages_to_contents(messages)
     
     # [CRITICAL FIX] 移除尾部无签名的 thinking 块
     # 对真实请求应用额外的清理

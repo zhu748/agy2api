@@ -4,7 +4,6 @@
 提供对OpenAI、Gemini和Anthropic格式的Hi消息的解析和响应
 """
 import time
-from typing import Any, Dict, List
 
 
 # ==================== Hi消息检测 ====================
@@ -46,25 +45,6 @@ def is_health_check_request(request_data: dict, format: str = "openai") -> bool:
             return True
     
     return False
-
-
-def is_health_check_message(messages: List[Dict[str, Any]]) -> bool:
-    """
-    直接检查消息列表是否为健康检查消息（Anthropic专用）
-    
-    这是一个便捷函数，用于已经提取出消息列表的场景。
-    
-    Args:
-        messages: 消息列表
-        
-    Returns:
-        是否为健康检查消息
-    """
-    return (
-        len(messages) == 1 
-        and messages[0].get("role") == "user" 
-        and messages[0].get("content") == "Hi"
-    )
 
 
 # ==================== Hi消息响应生成 ====================

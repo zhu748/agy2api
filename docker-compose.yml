@@ -2,7 +2,8 @@ version: '3.8'
 
 services:
   agy2api:
-    image: ghcr.io/su-kaka/agy2api:latest
+    # 原作者镜像已下线，改为从本地 Dockerfile 构建
+    build: .
     container_name: agy2api
     restart: unless-stopped
     network_mode: host

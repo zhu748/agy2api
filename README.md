@@ -33,7 +33,6 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](LICENSE)
-[![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/su-kaka/agy2api/pkgs/container/agy2api)
 
 [English](docs/README_EN.md) | 中文 | [日本語](docs/README_JA.md)
 
@@ -47,7 +46,7 @@
 
 **初始安装**
 ```bash
-git clone https://github.com/Annaabdullayeva/agy2api.git
+git clone https://github.com/zhu748/agy2api.git
 cd agy2api
 bash termux-install.sh
 ```
@@ -75,7 +74,7 @@ agyapi logs       # 最近 30 行日志
 
 **初始安装**
 ```powershell
-iex (iwr "https://raw.githubusercontent.com/Annaabdullayeva/agy2api/refs/heads/master/install.ps1" -UseBasicParsing).Content
+iex (iwr "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/install.ps1" -UseBasicParsing).Content
 ```
 
 **重启服务**
@@ -85,7 +84,7 @@ iex (iwr "https://raw.githubusercontent.com/Annaabdullayeva/agy2api/refs/heads/m
 
 **初始安装**
 ```bash
-curl -o install.sh "https://raw.githubusercontent.com/Annaabdullayeva/agy2api/refs/heads/master/install.sh" && chmod +x install.sh && ./install.sh
+curl -o install.sh "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/install.sh" && chmod +x install.sh && ./install.sh
 ```
 
 **重启服务**
@@ -98,7 +97,7 @@ bash start.sh
 
 **初始安装**
 ```bash
-curl -o darwin-install.sh "https://raw.githubusercontent.com/Annaabdullayeva/agy2api/refs/heads/master/darwin-install.sh" && chmod +x darwin-install.sh && ./darwin-install.sh
+curl -o darwin-install.sh "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/darwin-install.sh" && chmod +x darwin-install.sh && ./darwin-install.sh
 ```
 
 **重启服务**
@@ -109,9 +108,16 @@ bash start.sh
 
 ### Docker 环境
 
+> 原作者的 ghcr.io 镜像已随仓库删除，本镜像不发布 Docker 镜像，需本地构建。
+
+**构建镜像**
+```bash
+docker build -t agy2api .
+```
+
 **Docker 运行命令**
 ```bash
-docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PASSWORD=panel_pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds -v $(pwd)/data/request_logs:/app/data/request_logs ghcr.io/su-kaka/agy2api:latest
+docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PASSWORD=panel_pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds -v $(pwd)/data/request_logs:/app/data/request_logs agy2api:latest
 ```
 
 **Docker Compose 运行命令**
@@ -121,7 +127,7 @@ docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PAS
 
     services:
       agy2api:
-        image: ghcr.io/su-kaka/agy2api:latest
+        image: agy2api:latest
         container_name: agy2api
         restart: unless-stopped
         network_mode: host

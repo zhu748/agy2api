@@ -29,9 +29,8 @@ from .utils import (
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_SECRET,
     ANTIGRAVITY_SCOPES,
-    ANTIGRAVITY_USER_AGENT,
     CALLBACK_HOST,
-    TOKEN_URL,
+    get_antigravity_user_agent,
 )
 
 
@@ -97,36 +96,6 @@ def _patch_oauthlib_validation():
 auth_flows = {}  # 存储进行中的认证流程
 MAX_AUTH_FLOWS = 20  # 严格限制最大认证流程数
 DEFAULT_PROJECT_ID = "aicode-consumers"  # 获取不到 project_id 时的回退值
-
-
-def cleanup_auth_flows_for_memory():
-    """清理认证流程以释放内存"""
-    global auth_flows
-    cleanup_expired_flows()
-    # 如果还是太多，强制清理一些旧的流程
-    if len(auth_flows) > 10:
-        # 按创建时间排序，保留最新的10个
-        sorted_flows = sorted(
-            auth_flows.items(), key=lambda x: x[1].get("created_at", 0), reverse=True
-        )
-        new_auth_flows = dict(sorted_flows[:10])
-
-        # 清理被移除的流程
-        for state, flow_data in auth_flows.items():
-            if state not in new_auth_flows:
-                try:
-                    if flow_data.get("server"):
-                        server = flow_data["server"]
-                        port = flow_data.get("callback_port")
-                        async_shutdown_server(server, port)
-                except Exception:
-                    pass
-                flow_data.clear()
-
-        auth_flows = new_auth_flows
-        log.info(f"强制清理认证流程，保留 {len(auth_flows)} 个最新流程")
-
-    return len(auth_flows)
 
 
 def cleanup_expired_flows():
@@ -369,7 +338,7 @@ async def _save_antigravity_credential(
     antigravity_url = await get_antigravity_api_url()
     project_id, subscription_tier = await fetch_project_id_and_tier(
         credentials.access_token,
-        ANTIGRAVITY_USER_AGENT,
+        get_antigravity_user_agent(),
         antigravity_url
     )
     if project_id:
@@ -414,35 +383,8 @@ async def _save_antigravity_credential(
         "credentials": creds_data,
         "email": email,
         "tier": subscription_tier,
-        "auto_detected_project": bool(project_id),    }
-
-
-def wait_for_callback_sync(state: str, timeout: int = 300) -> Optional[str]:
-    """同步等待OAuth回调完成，使用对应流程的专用服务器"""
-    if state not in auth_flows:
-        log.error(f"未找到状态为 {state} 的认证流程")
-        return None
-
-    flow_data = auth_flows[state]
-    callback_port = flow_data["callback_port"]
-
-    # 服务器已经在create_auth_url时启动了，这里只需要等待
-    log.info(f"等待OAuth回调完成，端口: {callback_port}")
-
-    # 等待回调完成
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        if flow_data.get("code"):
-            log.info("OAuth回调成功完成")
-            return flow_data["code"]
-        time.sleep(0.5)  # 每0.5秒检查一次
-
-        # 刷新flow_data引用
-        if state in auth_flows:
-            flow_data = auth_flows[state]
-
-    log.warning(f"等待OAuth回调超时 ({timeout}秒)")
-    return None
+        "auto_detected_project": bool(project_id),
+    }
 
 
 async def asyncio_complete_auth_flow(

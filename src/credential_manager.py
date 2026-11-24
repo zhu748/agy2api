@@ -17,14 +17,8 @@ from src import session_cache
 from src.google_oauth_api import Credentials
 from src.storage.database import get_database
 
-# sticky 模式的当前粘性凭证（进程内唯一状态；重置函数供测试使用）
+# sticky 模式的当前粘性凭证（进程内唯一状态）
 _sticky_email: Optional[str] = None
-
-
-def _reset_sticky() -> None:
-    """清除粘性凭证指针（测试用）"""
-    global _sticky_email
-    _sticky_email = None
 
 
 # ====================== 凭证选取 ======================

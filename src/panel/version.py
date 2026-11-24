@@ -11,7 +11,6 @@ from log import log
 
 from src.httpx_client import get_async
 
-
 # 创建路由器
 router = APIRouter(prefix="/version", tags=["version"])
 
@@ -61,7 +60,7 @@ async def get_version_info(check_update: bool = False):
         if check_update:
             try:
                 # 直接获取GitHub上的version.txt文件
-                github_version_url = "https://raw.githubusercontent.com/su-kaka/agy2api/refs/heads/master/version.txt"
+                github_version_url = "https://raw.githubusercontent.com/zhu748/agy2api/refs/heads/master/version.txt"
 
                 # 使用统一的httpx客户端
                 resp = await get_async(github_version_url, timeout=10.0)

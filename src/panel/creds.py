@@ -27,7 +27,7 @@ from src.models import (
 from src.storage.database import get_database
 from src.utils import (
     verify_panel_token,
-    ANTIGRAVITY_USER_AGENT,
+    get_antigravity_user_agent,
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_SECRET,
 )
@@ -114,7 +114,7 @@ async def _import_single_credential(data: Dict[str, Any]) -> Dict[str, Any]:
                 api_base_url = await get_antigravity_api_url()
                 fetched_project, fetched_tier = await fetch_project_id_and_tier(
                     access_token=creds.access_token,
-                    user_agent=ANTIGRAVITY_USER_AGENT,
+                    user_agent=get_antigravity_user_agent(),
                     api_base_url=api_base_url,
                 )
                 if not project_id:
@@ -421,7 +421,7 @@ async def verify_credential_project_common(email: str) -> JSONResponse:
     api_base_url = await get_antigravity_api_url()
     project_id, subscription_tier = await fetch_project_id_and_tier(
         access_token=credentials.access_token,
-        user_agent=ANTIGRAVITY_USER_AGENT,
+        user_agent=get_antigravity_user_agent(),
         api_base_url=api_base_url,
     )
 

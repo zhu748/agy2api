@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import Optional
 
 import httpx
@@ -14,44 +15,88 @@ security = HTTPBearer()
 # ====================== OAuth Configuration ======================
 
 # Antigravity CLI 客户端仿真常量
-_DEFAULT_ANTIGRAVITY_CLI_VERSION = "1.5.2"
-_LATEST_RELEASE_URL = (
-    "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest"
+_DEFAULT_ANTIGRAVITY_CLI_VERSION = "1.5.16"
+
+# 版本来源：官方 CLI 发布清单（与 antigravity.google/cli/install.sh 同源）。
+# 版本号与平台无关，任取一份即可；两份用于容灾。
+_CLI_MANIFEST_URLS = (
+    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json",
+    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json",
 )
 
 
 def _get_latest_antigravity_cli_version() -> str:
-    """获取最新 Antigravity CLI 版本；获取失败时返回默认版本。"""
-    try:
-        response = httpx.get(
-            _LATEST_RELEASE_URL,
-            headers={"Accept": "application/vnd.github+json"},
-            timeout=10.0,
-        )
-        response.raise_for_status()
-        release_data = response.json()
-    except (httpx.HTTPError, ValueError) as error:
-        log.warning(
-            "获取最新 Antigravity CLI 版本失败，使用默认版本 "
-            f"{_DEFAULT_ANTIGRAVITY_CLI_VERSION}: {error}"
-        )
-        return _DEFAULT_ANTIGRAVITY_CLI_VERSION
+    """从官方发布清单获取最新 Antigravity CLI 版本；全部失败时返回默认版本。"""
+    for url in _CLI_MANIFEST_URLS:
+        try:
+            response = httpx.get(url, timeout=10.0)
+            response.raise_for_status()
+            manifest = response.json()
+        except (httpx.HTTPError, ValueError) as error:
+            log.debug(f"获取 Antigravity CLI 版本清单失败（{url}）：{error}")
+            continue
 
-    tag_name = release_data.get("tag_name") if isinstance(release_data, dict) else None
-    if not isinstance(tag_name, str) or not tag_name.strip():
-        log.warning(
-            "GitHub API 响应中没有有效的 tag_name，使用默认版本 "
-            f"{_DEFAULT_ANTIGRAVITY_CLI_VERSION}"
-        )
-        return _DEFAULT_ANTIGRAVITY_CLI_VERSION
+        version = manifest.get("version") if isinstance(manifest, dict) else None
+        if isinstance(version, str) and version.strip():
+            return version.strip().lstrip("vV")
 
-    return tag_name.strip().lstrip("vV")
+    log.warning(
+        f"官方版本清单均不可用，使用默认版本 {_DEFAULT_ANTIGRAVITY_CLI_VERSION}"
+    )
+    return _DEFAULT_ANTIGRAVITY_CLI_VERSION
 
 
-ANTIGRAVITY_CLI_VERSION = _get_latest_antigravity_cli_version()
-ANTIGRAVITY_CLI_PLATFORM = "windows/amd64"
-ANTIGRAVITY_USER_AGENT = f"antigravity/cli/{ANTIGRAVITY_CLI_VERSION} {ANTIGRAVITY_CLI_PLATFORM}"
-log.info(f"当前 Antigravity CLI 版本: {ANTIGRAVITY_CLI_VERSION}")
+# CLI 版本：默认值立即可用，最新版由后台线程获取后热替换。
+# 不在 import 时同步请求网络（避免启动被阻塞最多 10 秒）。
+ANTIGRAVITY_CLI_VERSION = _DEFAULT_ANTIGRAVITY_CLI_VERSION
+
+# UA 构造常量（对齐官方 CLI v1.5.16 实测抓包格式）
+ANTIGRAVITY_CLI_OS_TYPE = "windows"
+ANTIGRAVITY_CLI_ARCH = "amd64"
+_ANTIGRAVITY_CLI_BUILD_CL = "1028571191"  # 官方 1.5.16 构建的 changelist 号
+
+
+def get_antigravity_user_agent(purpose: Optional[str] = None) -> str:
+    """返回 Antigravity CLI 仿真 User-Agent（版本由后台线程异步刷新）。
+
+    对齐官方 CLI v1.5.16 实测格式：
+        antigravity/cli/1.5.16 (aidev_client; os_type=windows; arch=amd64;
+        cl=1028571191; auth_method=oauth-personal[; purpose=<purpose>])
+
+    auth_method 与官方一致地按登录方式取值（oauth-personal / business /
+    aicode / gemini_api_key / adc）；本项目走个人 Google OAuth，固定为
+    oauth-personal。purpose 为空时省略该段（与官方 generateContent 请求
+    的 UA 一致；模型可用性探测等用途会携带 purpose）。
+    """
+    parts = [
+        "aidev_client",
+        f"os_type={ANTIGRAVITY_CLI_OS_TYPE}",
+        f"arch={ANTIGRAVITY_CLI_ARCH}",
+        f"cl={_ANTIGRAVITY_CLI_BUILD_CL}",
+        "auth_method=oauth-personal",
+    ]
+    if purpose:
+        parts.append(f"purpose={purpose}")
+    joined = "; ".join(parts)
+    return f"antigravity/cli/{ANTIGRAVITY_CLI_VERSION} ({joined})"
+
+
+def _refresh_cli_version_in_background() -> None:
+    """后台线程获取最新 CLI 版本，完成后替换默认值"""
+
+    def _worker():
+        global ANTIGRAVITY_CLI_VERSION
+        version = _get_latest_antigravity_cli_version()
+        if version != ANTIGRAVITY_CLI_VERSION:
+            ANTIGRAVITY_CLI_VERSION = version
+            log.info(f"当前 Antigravity CLI 版本已更新为: {version}")
+        else:
+            log.info(f"当前 Antigravity CLI 版本: {version}")
+
+    threading.Thread(target=_worker, daemon=True, name="antigravity-cli-version").start()
+
+
+_refresh_cli_version_in_background()
 
 # Antigravity OAuth Configuration
 # 本仓库不含任何真实凭据：从环境变量读取（.env 会被自动加载）。
@@ -63,11 +108,11 @@ ANTIGRAVITY_SCOPES = [
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/userinfo.profile',
     'https://www.googleapis.com/auth/cclog',
-    'https://www.googleapis.com/auth/experimentsandconfigs'
+    'https://www.googleapis.com/auth/experimentsandconfigs',
+    # 2026-11 起官方 CLI 授权 URL 新增的两个 scope（实测抓包确认）
+    'https://www.googleapis.com/auth/aicode',
+    'openid',
 ]
-
-# 统一的 Token URL（两种模式相同）
-TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # 回调服务器配置
 CALLBACK_HOST = "localhost"

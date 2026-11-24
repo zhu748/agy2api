@@ -10,11 +10,9 @@
 """
 
 import asyncio
-from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-import json
 from fastapi import Response
 
 from config import get_proxy_config
@@ -102,24 +100,6 @@ async def close_shared_clients() -> None:
         await _safe_aclose(client)
 
 
-# ====================== 客户端获取（兼容旧接口） ======================
-
-@asynccontextmanager
-async def get_client(
-    timeout: float = 30.0, **kwargs
-) -> AsyncGenerator[httpx.AsyncClient, None]:
-    """获取配置好的异步HTTP客户端（共享复用）"""
-    yield await _get_shared_client()
-
-
-@asynccontextmanager
-async def get_streaming_client(
-    timeout: float = None, **kwargs
-) -> AsyncGenerator[httpx.AsyncClient, None]:
-    """获取用于流式请求的HTTP客户端（共享复用）"""
-    yield await _get_shared_client()
-
-
 # ====================== 异步请求方法 ======================
 
 async def get_async(
@@ -145,9 +125,6 @@ async def post_async(
     )
 
 
-# 调试用：设为 True 时所有流式请求都返回 429
-_MOCK_STREAM_429 = False
-
 async def stream_post_async(
     url: str,
     body: Dict[str, Any],
@@ -156,14 +133,6 @@ async def stream_post_async(
     **kwargs,
 ):
     """流式异步POST请求"""
-    if _MOCK_STREAM_429:
-        log.warning(f"[MOCK] stream_post_async: 返回模拟429错误")
-        yield Response(
-            content=json.dumps({"error": {"code": 429, "message": "mock rate limit", "status": "RESOURCE_EXHAUSTED"}}),
-            status_code=429,
-        )
-        return
-
     client = await _get_shared_client()
     async with client.stream(
         "POST", url, json=body, headers=headers, **kwargs
