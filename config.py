@@ -6,10 +6,13 @@ Centralizes all configuration to avoid duplication across modules.
 - 修改配置时调用 reload_config() 重新从数据库加载
 """
 
+import base64
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import secrets
 from typing import Any, Optional
 
 from log import log
@@ -226,9 +229,10 @@ async def get_server_host() -> str:
 
     Environment variable: HOST
     Database config key: host
-    Default: 0.0.0.0
+    Default: 127.0.0.1（安全加固：默认仅监听本地回环；
+    Docker / 局域网部署请显式设置 HOST=0.0.0.0）
     """
-    return str(await get_config_value("host", "0.0.0.0", "HOST"))
+    return str(await get_config_value("host", "127.0.0.1", "HOST"))
 
 
 async def get_server_port() -> int:
@@ -267,8 +271,70 @@ async def get_panel_password() -> str:
     Environment variable: PANEL_PASSWORD
     Database config key: panel_password
     Default: pwd
+
+    返回值可能是明文（旧数据 / 环境变量）或 pbkdf2_sha256$... 哈希串
+    （经 save 保存的新密码）；仅用于内部比对，不应回显给前端。
     """
     return str(await get_config_value("panel_password", "pwd", "PANEL_PASSWORD"))
+
+
+# ====================== 面板密码哈希（落库脱敏） ======================
+# 存储格式: pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>
+_PANEL_PASSWORD_HASH_PREFIX = "pbkdf2_sha256$"
+_PANEL_PASSWORD_HASH_ITERATIONS = 200_000
+
+
+def hash_panel_password(password: str) -> str:
+    """对面板密码做 PBKDF2 哈希，用于落库存储（不再明文持久化）。"""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, _PANEL_PASSWORD_HASH_ITERATIONS
+    )
+    return (
+        f"{_PANEL_PASSWORD_HASH_PREFIX}"
+        f"{_PANEL_PASSWORD_HASH_ITERATIONS}"
+        f"${base64.b64encode(salt).decode()}"
+        f"${base64.b64encode(digest).decode()}"
+    )
+
+
+def _verify_panel_password_hash(stored: str, candidate: str) -> bool:
+    """校验 pbkdf2_sha256$... 格式的存储值；格式异常时返回 False。"""
+    try:
+        scheme, iterations, salt_b64, hash_b64 = stored.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        iterations_int = int(iterations)  # 允许不同迭代次数的旧哈希
+        if iterations_int < 1:
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            candidate.encode("utf-8"),
+            base64.b64decode(salt_b64),
+            iterations_int,
+        )
+        return secrets.compare_digest(
+            base64.b64encode(digest), hash_b64.encode("ascii")
+        )
+    except (ValueError, TypeError, UnicodeError):
+        return False
+
+
+async def verify_panel_password(candidate: str) -> bool:
+    """
+    校验面板密码（统一入口，常量时间比较）。
+
+    存储值为哈希串时走 PBKDF2 校验；否则（旧数据或环境变量明文）
+    用 compare_digest 直接比对。空密码恒拒绝。
+    """
+    if not candidate:
+        return False
+    stored = str(await get_config_value("panel_password", "pwd", "PANEL_PASSWORD"))
+    if stored.startswith(_PANEL_PASSWORD_HASH_PREFIX):
+        return _verify_panel_password_hash(stored, candidate)
+    return secrets.compare_digest(
+        candidate.encode("utf-8"), stored.encode("utf-8")
+    )
 
 
 async def get_credentials_dir() -> str:

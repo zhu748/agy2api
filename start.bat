@@ -1,6 +1,10 @@
-git fetch --all
-for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD') do set branch=%%b
-git reset --hard origin/%branch%
+@echo off
+REM 启动 AGY2API（安全加固：不再自动同步远端代码）
+REM
+REM 说明：旧版本启动时会执行 git fetch --all + git reset --hard 强制对齐远端，
+REM 属于供应链风险（远端被接管即等于下次启动执行任意代码），已移除。
+REM 如需更新：先人工核对远端仓库可信后执行 git pull --ff-only，再运行本脚本。
+
 uv sync
 call .venv\Scripts\activate.bat
 python web.py

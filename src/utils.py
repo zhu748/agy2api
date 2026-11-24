@@ -1,10 +1,15 @@
+import base64
+import hashlib
+import hmac
 import os
+import secrets
 import threading
-from typing import Optional
+import time
+from typing import Dict, Optional
 
 import httpx
 
-from config import get_api_password, get_panel_password
+from config import get_api_password, get_panel_password, verify_panel_password
 from fastapi import Depends, HTTPException, Header, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from log import log
@@ -236,8 +241,8 @@ async def authenticate_flexible(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # 验证 token
-    if token != password:
+    # 验证 token（常量时间比较，避免时序侧信道泄露密码前缀信息）
+    if not secrets.compare_digest(token.encode("utf-8"), password.encode("utf-8")):
         log.debug(f"Authentication failed using {auth_method}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -255,11 +260,65 @@ authenticate_gemini_flexible = authenticate_flexible
 
 # ====================== Panel Authentication Functions ======================
 
+# 面板会话令牌：无状态 HMAC 签名令牌（跨 worker/重启均有效）。
+# 载荷为过期时刻，密钥为当前存储的面板密码（哈希串或明文）——
+# 密码变更后旧令牌自动全部失效，无需服务端集中吊销。
+# 默认 24 小时有效期。
+_PANEL_SESSION_TTL_SECONDS = 24 * 3600
+_PANEL_SESSION_PREFIX = b"panel-session:"
+
+
+def _panel_session_key(stored_password: str) -> bytes:
+    """会话签名密钥：取存储的面板密码原文（哈希串或明文）作 HMAC 密钥。"""
+    return stored_password.encode("utf-8")
+
+
+def _sign_panel_session(stored_password: str, expiry: int) -> str:
+    payload = _PANEL_SESSION_PREFIX + str(expiry).encode()
+    signature = hmac.new(
+        _panel_session_key(stored_password), payload, hashlib.sha256
+    ).digest()
+    token = base64.urlsafe_b64encode(payload + b"." + signature).decode()
+    return token.rstrip("=")
+
+
+async def issue_panel_session_token() -> str:
+    """签发一个新的面板会话令牌（24 小时有效，与密码解耦且改密即失效）。"""
+    stored_password = await get_panel_password()
+    expiry = int(time.time()) + _PANEL_SESSION_TTL_SECONDS
+    return _sign_panel_session(stored_password, expiry)
+
+
+async def _is_valid_panel_session(token: str) -> bool:
+    """校验签名令牌：签名匹配且未过期。"""
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload, _, signature = raw.rpartition(b".")
+        if not payload or not signature:
+            return False
+        if not payload.startswith(_PANEL_SESSION_PREFIX):
+            return False
+        stored_password = await get_panel_password()
+        expected = hmac.new(
+            _panel_session_key(stored_password), payload, hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(signature, expected):
+            return False
+        expiry = int(payload[len(_PANEL_SESSION_PREFIX) :])
+        return expiry >= int(time.time())
+    except (ValueError, TypeError, UnicodeError):
+        return False
+
+
 async def verify_panel_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """
-    简化的控制面板密码验证函数
+    控制面板令牌验证函数（签名会话令牌优先，密码直传兼容）
 
-    直接验证Bearer token是否等于控制面板密码
+    优先校验 Bearer 令牌是否为服务端签发的有效面板会话（无状态 HMAC
+    签名，多 worker / 重启后仍有效）；否则回退为以面板密码直接作为
+    令牌的旧用法（常量时间比较），兼容既有部署与脚本。面板密码变更
+    后旧会话令牌自动失效。
 
     Args:
         credentials: HTTPAuthorizationCredentials 自动注入
@@ -268,10 +327,11 @@ async def verify_panel_token(credentials: HTTPAuthorizationCredentials = Depends
         验证通过的token
 
     Raises:
-        HTTPException: 密码错误时抛出401异常
+        HTTPException: 令牌无效或密码错误时抛出401异常
     """
-
-    password = await get_panel_password()
-    if credentials.credentials != password:
-        raise HTTPException(status_code=401, detail="密码错误")
-    return credentials.credentials
+    token = credentials.credentials
+    if token and await _is_valid_panel_session(token):
+        return token
+    if token and await verify_panel_password(token):
+        return token
+    raise HTTPException(status_code=401, detail="令牌无效或密码错误")

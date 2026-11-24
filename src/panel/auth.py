@@ -19,7 +19,7 @@ from src.models import (
     AuthCallbackRequest,
     AuthCallbackUrlRequest,
 )
-from src.utils import verify_panel_token
+from src.utils import issue_panel_session_token, verify_panel_token
 
 
 # 创建路由器
@@ -28,11 +28,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/login")
 async def login(request: LoginRequest):
-    """用户登录（简化版：直接返回密码作为token）"""
+    """用户登录（签发 24 小时有效期的 HMAC 签名会话令牌，不再回传密码本身）"""
     try:
         if await verify_password(request.password):
-            # 直接使用密码作为token，简化认证流程
-            return JSONResponse(content={"token": request.password, "message": "登录成功"})
+            # 会话令牌与密码解耦：泄露令牌不等于泄露长期密码
+            return JSONResponse(
+                content={"token": await issue_panel_session_token(), "message": "登录成功"}
+            )
         else:
             raise HTTPException(status_code=401, detail="密码错误")
     except HTTPException:

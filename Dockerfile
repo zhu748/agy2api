@@ -37,5 +37,9 @@ COPY . .
 # Expose port
 EXPOSE 7861
 
+# 容器内必须绑定 0.0.0.0 端口映射才能生效
+# （裸机部署的默认 HOST 已改为 127.0.0.1，仅容器内显式绑定全网卡）
+ENV HOST=0.0.0.0
+
 # 通过 web.py 启动，使 HOST/PORT 环境变量生效
 CMD ["python", "web.py"]

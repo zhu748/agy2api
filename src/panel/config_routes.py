@@ -79,7 +79,9 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["host"] = await config.get_server_host()
         current_config["port"] = await config.get_server_port()
         current_config["api_password"] = await config.get_api_password()
-        current_config["panel_password"] = await config.get_panel_password()
+        # 面板密码不再回显（哈希落库后无法展示，也不应回传给前端）；
+        # 前端保存时留空表示不修改
+        current_config["panel_password"] = ""
 
         # 从数据库读取配置
         database = await get_database()
@@ -88,10 +90,11 @@ async def get_config(token: str = Depends(verify_panel_token)):
         # 获取环境变量锁定的配置键
         env_locked_keys = get_env_locked_keys()
 
-        # 合并存储系统配置（不覆盖环境变量）
+        # 合并存储系统配置（不覆盖环境变量；面板密码无论何种形态都不回显）
         for key, value in storage_config.items():
-            if key not in env_locked_keys:
-                current_config[key] = value
+            if key in env_locked_keys or key == "panel_password":
+                continue
+            current_config[key] = value
 
         return JSONResponse(content={"config": current_config, "env_locked": list(env_locked_keys)})
 
@@ -265,31 +268,40 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         if "panel_password" in new_config:
             if not isinstance(new_config["panel_password"], str):
                 raise HTTPException(status_code=400, detail="控制面板密码必须是字符串")
-
         # 获取环境变量锁定的配置键
         env_locked_keys = get_env_locked_keys()
+
+        # 面板密码：留空表示不修改；非空且未被环境变量锁定时哈希后落库
+        if "panel_password" in new_config and new_config["panel_password"] == "":
+            new_config.pop("panel_password")
+
+        if (
+            "panel_password" in new_config
+            and "panel_password" not in env_locked_keys
+        ):
+            new_config["panel_password"] = config.hash_panel_password(
+                new_config["panel_password"]
+            )
 
         # 直接写入数据库
         database = await get_database()
         for key, value in new_config.items():
             if key not in env_locked_keys:
                 await database.set_config(key, value)
-                if key in ("api_password", "panel_password"):
-                    log.debug(f"设置{key}字段为: {value}")
 
         # 重新加载配置缓存（关键！）
         await config.reload_config()
+        # 面板密码变更无需集中吊销：会话令牌以存储密码为 HMAC 密钥签名，
+        # 密码变更后旧令牌自动失效
 
-        # 验证保存后的结果
-        test_api_password = await config.get_api_password()
-        test_panel_password = await config.get_panel_password()
-        log.debug(f"保存后立即读取的API密码: {test_api_password}")
-        log.debug(f"保存后立即读取的面板密码: {test_panel_password}")
-
-        # 构建响应消息
+        # 构建响应消息（密码类字段不回显原文，面板密码以掩码表示）
         response_data = {
             "message": "配置保存成功",
-            "saved_config": {k: v for k, v in new_config.items() if k not in env_locked_keys},
+            "saved_config": {
+                k: ("******" if k == "panel_password" else v)
+                for k, v in new_config.items()
+                if k not in env_locked_keys
+            },
         }
 
         return JSONResponse(content=response_data)

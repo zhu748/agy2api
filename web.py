@@ -34,6 +34,35 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     log.info("启动 AGY2API 主服务")
 
+    # 启动期安全自检：弱密码/暴露面组合告警
+    try:
+        import config as _config
+
+        _weak_passwords = {"pwd", "password", "123456", "admin", ""}
+        _api_pw = await _config.get_api_password()
+        _panel_pw = await _config.get_panel_password()
+        _host = await _config.get_server_host()
+        _weak_hits = [
+            name
+            for name, value in (("API_PASSWORD", _api_pw), ("PANEL_PASSWORD", _panel_pw))
+            if value in _weak_passwords
+        ]
+        if _weak_hits:
+            log.warning("=" * 60)
+            log.warning("安全告警：检测到弱/默认密码（" + ", ".join(_weak_hits) + "）")
+            log.warning(
+                "请立即修改 .env 或面板中的密码后再对外使用；"
+                "默认密码叠加公网监听会导致面板与 API 完全暴露。"
+            )
+            if _host not in ("127.0.0.1", "localhost", "::1"):
+                log.warning(
+                    f"当前 HOST={_host} 正在监听非回环地址，弱密码 + 对外监听"
+                    "组合风险极高，请立即改密或将 HOST 改为 127.0.0.1。"
+                )
+            log.warning("=" * 60)
+    except Exception as e:
+        log.warning(f"启动期安全自检失败（不影响启动）: {e}")
+
     # 初始化配置缓存（优先执行）
     try:
         import config
@@ -183,14 +212,27 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS中间件
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS 中间件：默认不启用（仅同源访问，面板与文档均不受影响）。
+# 需要跨域访问时通过 CORS_ALLOW_ORIGINS 显式放行，逗号分隔，例如：
+#   CORS_ALLOW_ORIGINS=https://panel.example.com,https://app.example.com
+# 安全说明：不再默认放行任意来源 —— 与开放鉴权端点叠加时，
+# 任意网页均可读取响应体（含 /creds/download-all 凭证导出）。
+_cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    log.info(f"CORS 已启用，允许来源: {_cors_origins}")
+else:
+    log.info("CORS 未配置，仅允许同源访问（需跨域时设置 CORS_ALLOW_ORIGINS）")
 
 # IP 白名单中间件（先于 CORS 与所有路由执行）
 app.add_middleware(IPWhitelistMiddleware)
@@ -228,7 +270,7 @@ def main():
     import uvicorn
 
     port = int(os.environ.get("PORT", 7861))
-    host = os.environ.get("HOST", "0.0.0.0")
+    host = os.environ.get("HOST", "127.0.0.1")
     workers = int(os.environ.get("WORKERS", 1))
 
     log.info("=" * 60)

@@ -198,13 +198,13 @@ docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PAS
 
 ## 配置说明
 
-1. 访问 `http://127.0.0.1:7861`（默认端口，可通过 PORT 环境变量修改）
-2. 完成 Antigravity OAuth 认证流程（默认密码：`pwd`，可通过环境变量修改）
+1. 访问 `http://127.0.0.1:7861`（默认监听 127.0.0.1，可通过 HOST/PORT 环境变量修改）
+2. 完成 Antigravity OAuth 认证流程（默认密码：`pwd`，**请首次登录后立即修改**；启动时检测到弱/默认密码会输出告警）
 3. 配置客户端：
 
 **OpenAI 兼容客户端：**
 - **端点地址**：`http://127.0.0.1:7861/v1`
-- **API 密钥**：`pwd`（默认值，可通过 API_PASSWORD 环境变量修改）
+- **API 密钥**：`pwd`（默认值，可通过 API_PASSWORD 环境变量修改；生产使用务必换强随机值）
 
 **Gemini 原生客户端：**
 - **端点地址**：`http://127.0.0.1:7861`
@@ -234,15 +234,16 @@ docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PAS
 
 **基础配置**
 - `PORT`: 服务端口（默认：7861）
-- `HOST`: 服务器监听地址（默认：0.0.0.0）
+- `HOST`: 服务器监听地址（默认：127.0.0.1，仅本地回环；需局域网/公网访问或 Docker 映射时设为 0.0.0.0，Docker 镜像已内置 0.0.0.0）
 
 **密码配置**
-- `API_PASSWORD`: 聊天 API 访问密码（默认：pwd）
-- `PANEL_PASSWORD`: 控制面板访问密码（默认：pwd）
+- `API_PASSWORD`: 聊天 API 访问密码（默认：pwd；弱/默认密码启动时会告警）
+- `PANEL_PASSWORD`: 控制面板访问密码（默认：pwd；保存到数据库时自动哈希存储，面板登录签发 24 小时会话令牌）
 
 **访问控制配置**
 - `IP_WHITELIST_ENABLED`: 启用 IP 白名单（默认：false，不限制）
 - `IP_WHITELIST`: IP 白名单列表，逗号或换行分隔（默认：空）。每条支持单个 IP（`192.168.1.1`）、CIDR 网段（`192.168.1.0/24`）、起止范围（`10.0.0.1-10.0.0.100`），IPv4 / IPv6 均可。开启后仅白名单内 IP 可访问面板和 API，其余 IP 直接 403；面板保存后立即生效
+- `CORS_ALLOW_ORIGINS`: 允许跨域访问的来源列表，逗号分隔（默认：空，即仅同源访问；设置后指定网页才能跨源读取响应）
 
 **模型名复写配置**
 - `MODEL_REWRITE_ENABLED`: 启用模型名复写（默认：false）

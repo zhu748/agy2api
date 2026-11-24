@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 import oauthlib.oauth2.rfc6749.parameters
 
-from config import get_config_value, get_antigravity_api_url, get_panel_password
+from config import get_config_value, get_antigravity_api_url, verify_panel_password
 from log import log
 
 from .google_oauth_api import (
@@ -617,6 +617,5 @@ def get_auth_status(project_id: str) -> Dict[str, Any]:
 
 
 async def verify_password(password: str) -> bool:
-    """验证密码（面板登录使用）"""
-    correct_password = await get_panel_password()
-    return password == correct_password
+    """验证密码（面板登录使用；哈希存储与旧明文均兼容，常量时间比较）"""
+    return await verify_panel_password(password)

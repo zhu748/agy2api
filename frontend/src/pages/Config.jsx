@@ -98,7 +98,7 @@ const CONFIG_GROUPS = [
       { key: "host", label: "服务器主机地址", type: "text", note: "服务器监听的主机地址，0.0.0.0表示监听所有接口（重启生效）" },
       { key: "port", label: "服务器端口", type: "number", note: "服务器监听的端口号（重启生效）" },
       { key: "api_password", label: "API 访问密码", type: "text", note: "聊天API访问密码，用于 OpenAI / Gemini / Claude 端点认证" },
-      { key: "panel_password", label: "控制面板密码", type: "text", note: "控制面板访问密码" },
+      { key: "panel_password", label: "控制面板密码", type: "text", note: "控制面板访问密码（留空表示不修改；保存后将以哈希存储，不再回显）" },
     ],
   },
   {
