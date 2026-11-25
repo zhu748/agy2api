@@ -237,7 +237,7 @@ async def messages(
                             real_model,
                             chunk.status_code
                         )
-                        yield f"data: {json.dumps(anthropic_error)}\n\n".encode('utf-8')
+                        yield f"data: {json.dumps(anthropic_error, ensure_ascii=False)}\n\n".encode('utf-8')
                     except Exception:
                         yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}})}\n\n".encode('utf-8')
                     yield b"data: [DONE]\n\n"

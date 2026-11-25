@@ -17,12 +17,36 @@ from fastapi import Response
 
 from config import get_proxy_config
 from log import log
+from src.tasks import create_background_task
 
 # ====================== 共享客户端 ======================
 
 # (代理指纹, AsyncClient) 列表；正常情况下最多两个条目（无代理/有代理）
 _shared_clients: List[Tuple[str, httpx.AsyncClient]] = []
 _shared_clients_lock = asyncio.Lock()
+
+# ====================== 上游响应头过滤 ======================
+
+# httpx 会自动解压响应体（content 为明文），但原始 headers 仍保留
+# content-encoding / content-length（压缩后的值）。若原样转发，客户端会
+# 按 gzip 解码明文 JSON 而报错。这里剔除与实际 body 不符或属于逐跳的头部。
+_UNSAFE_RESPONSE_HEADERS = frozenset({
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "content-discovery",
+})
+
+
+def safe_response_headers(headers) -> Dict[str, str]:
+    """从上游响应头中过滤出可安全转发的部分"""
+    return {
+        key: value
+        for key, value in dict(headers).items()
+        if key.lower() not in _UNSAFE_RESPONSE_HEADERS
+    }
 
 
 def _client_fingerprint(proxy_url: Optional[str]) -> str:
@@ -46,7 +70,7 @@ async def _safe_aclose(client: httpx.AsyncClient) -> None:
         log.warning(f"关闭旧 httpx 客户端失败: {e}")
 
 
-async def _get_shared_client(**kwargs) -> httpx.AsyncClient:
+async def _get_shared_client() -> httpx.AsyncClient:
     """
     获取共享的 AsyncClient（按代理指纹缓存复用）。
 
@@ -81,10 +105,10 @@ async def _get_shared_client(**kwargs) -> httpx.AsyncClient:
         new_client = await _build_client(proxy_url)
         _shared_clients.append((fingerprint, new_client))
 
-        # 惰性关闭旧客户端，不阻塞当前请求
+        # 惰性关闭旧客户端，不阻塞当前请求（持有任务引用防止被 GC 中途取消）
         for old in stale:
             try:
-                asyncio.create_task(_safe_aclose(old))
+                create_background_task(_safe_aclose(old))
             except Exception as e:
                 log.warning(f"调度旧客户端关闭失败: {e}")
 
@@ -137,9 +161,9 @@ async def stream_post_async(
     async with client.stream(
         "POST", url, json=body, headers=headers, **kwargs
     ) as r:
-        # 错误直接返回
+        # 错误直接返回（过滤与已解压 body 矛盾的响应头，避免客户端按 gzip 解码明文失败）
         if r.status_code != 200:
-            yield Response(await r.aread(), r.status_code, dict(r.headers))
+            yield Response(await r.aread(), r.status_code, safe_response_headers(r.headers))
             return
 
         # 如果native=True，直接返回bytes流

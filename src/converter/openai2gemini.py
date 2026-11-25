@@ -1817,4 +1817,6 @@ def convert_gemini_to_openai_stream(
             response_data["usage"] = usage
 
     # 转换为 SSE 格式: "data: {json}\n\n"
-    return f"data: {json.dumps(response_data)}\n\n"
+    # ensure_ascii=False：中文原文 UTF-8 输出（3字节/字），比 \uXXXX 转义（6字节/字）
+    # 节省一半以上体积，且与 Anthropic/Gemini 转换器行为一致
+    return f"data: {json.dumps(response_data, ensure_ascii=False)}\n\n"

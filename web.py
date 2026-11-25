@@ -265,13 +265,46 @@ if os.path.isdir("docs"):
     app.mount("/docs", StaticFiles(directory="docs"), name="docs")
 
 
+async def _resolve_server_bind_address() -> tuple:
+    """
+    解析服务绑定地址：环境变量优先，其次数据库配置，最后默认值。
+
+    在临时事件循环中读取数据库配置后立即关闭数据库引擎——异步引擎
+    绑定在创建它的事件循环上，若保留到 uvicorn 的新循环会报
+    "attached to a different loop"。关闭后应用启动时（lifespan）会
+    在正确的循环中重新初始化。
+    """
+    import config
+
+    host = port = None
+    try:
+        host = await config.get_server_host()
+        port = await config.get_server_port()
+    finally:
+        try:
+            from src.storage.database import close_database
+            await close_database()
+        except Exception:
+            pass
+    return host, port
+
+
 def main():
     """主启动函数：uvicorn 直接运行 ASGI 应用"""
+    import asyncio
     import uvicorn
 
-    port = int(os.environ.get("PORT", 7861))
-    host = os.environ.get("HOST", "127.0.0.1")
     workers = int(os.environ.get("WORKERS", 1))
+
+    # 绑定地址：环境变量 > 面板(数据库)配置 > 默认值。
+    # 此前面板保存的 host/port 仅存库未被使用，重启后始终回落环境变量，
+    # 现在让面板配置真正生效。
+    try:
+        host, port = asyncio.run(_resolve_server_bind_address())
+    except Exception as e:
+        log.warning(f"读取数据库中的 host/port 配置失败，使用环境变量/默认值: {e}")
+        host = os.environ.get("HOST", "127.0.0.1")
+        port = int(os.environ.get("PORT", 7861))
 
     log.info("=" * 60)
     log.info("启动 AGY2API")

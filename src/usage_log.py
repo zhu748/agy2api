@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import json
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -14,6 +15,7 @@ import config
 from log import log
 
 from src.storage.database import get_database
+from src.tasks import create_background_task
 
 
 def new_request_id() -> str:
@@ -33,11 +35,9 @@ _FLUSH_INTERVAL = 2.0
 # 缓冲区上限（超过立即批量落库，防止异常高峰下内存增长）
 _MAX_PENDING = 500
 
-_FLUSH_LOOP_STOP = False
-
 
 async def _flush_pending_logs() -> None:
-    """将待写日志批量落库（分批事务，单条失败不影响整批）"""
+    """将待写日志批量落库（单事务批量插入；失败回退为逐条写入，不影响主流程）"""
     global _pending_logs
     async with _queue_lock:
         batch = _pending_logs
@@ -46,11 +46,7 @@ async def _flush_pending_logs() -> None:
         return
 
     database = await get_database()
-    for entry in batch:
-        try:
-            await database.insert_usage_log(entry)
-        except Exception as e:
-            log.debug(f"请求日志写入失败（不影响主流程）: {e}")
+    await database.insert_usage_logs_batch(batch)
 
 
 async def _flush_loop() -> None:
@@ -67,7 +63,12 @@ def _ensure_flush_loop() -> None:
     """确保后台刷新任务存在（惰性启动，随事件循环生命周期）"""
     global _flush_task
     if _flush_task is None or _flush_task.done():
-        _flush_task = asyncio.get_event_loop().create_task(_flush_loop())
+        try:
+            # get_event_loop 在 Python 3.12+ 已废弃，且无运行循环时会告警
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        _flush_task = loop.create_task(_flush_loop())
 
 
 async def flush_usage_logs() -> None:
@@ -76,14 +77,13 @@ async def flush_usage_logs() -> None:
 
 
 def _enqueue_log(entry: Dict[str, Any]) -> None:
-    """入队一条日志；缓冲区超限时同步触发一次批量落库"""
-    global _pending_logs
+    """入队一条日志；缓冲区超限时调度一次批量落库（持有任务引用防止被 GC）"""
     _pending_logs.append(entry)
     if len(_pending_logs) >= _MAX_PENDING:
         try:
-            # 已在事件循环内：调度立即刷新（不阻塞请求）
-            asyncio.get_event_loop().create_task(_flush_pending_logs())
-        except Exception:
+            create_background_task(_flush_pending_logs())
+        except RuntimeError:
+            # 无运行中的事件循环（理论上不会发生）：交由定时任务兜底
             pass
 
 
@@ -123,7 +123,7 @@ def extract_usage_tokens(source: Any) -> Dict[str, int]:
                 text = text[len("data: "):].strip()
             if not text or text == "[DONE]":
                 return {}
-            source = __import__("json").loads(text)
+            source = json.loads(text)
         except Exception:
             return {}
 

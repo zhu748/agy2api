@@ -2,7 +2,6 @@
 API 客户端共用基础功能：自动封禁、错误重试、调用结果记录、冷却解析
 """
 
-import asyncio
 import json
 import re
 import time
@@ -46,13 +45,17 @@ async def handle_error_with_retry(
     retry_interval: float,
 ) -> bool:
     """
-    统一处理错误和重试逻辑
+    统一处理错误和重试决策（纯决策，不在此处休眠——等待由调用方在
+    切换凭证时统一执行，避免每次重试双重休眠 2×retry_interval）
 
     仅在以下情况下进行自动重试:
     1. 429错误(速率限制)
     2. 503错误(服务不可用)
     3. 500错误(服务临时不可用)
     4. 导致凭证封禁的错误(AUTO_BAN_ERROR_CODES配置)
+
+    Args:
+        retry_interval: 已废弃参数，仅为兼容既有调用签名保留，不再使用
 
     Returns:
         bool: True表示需要继续重试，False表示不需要重试
@@ -67,7 +70,6 @@ async def handle_error_with_retry(
                 f"[RETRY] Retrying with next credential after auto-ban "
                 f"(status {status_code}, attempt {attempt + 1}/{max_retries})"
             )
-            await asyncio.sleep(retry_interval)
             return True
         return False
 
@@ -77,7 +79,6 @@ async def handle_error_with_retry(
             f"[RETRY] {status_code} error encountered, retrying "
             f"(attempt {attempt + 1}/{max_retries})"
         )
-        await asyncio.sleep(retry_interval)
         return True
 
     return False

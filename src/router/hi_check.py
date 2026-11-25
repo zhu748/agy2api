@@ -32,8 +32,10 @@ def is_health_check_request(request_data: dict, format: str = "openai") -> bool:
         contents = request_data.get("contents", [])
         if len(contents) == 1:
             content = contents[0]
-            if (content.get("role") == "user" and 
-                content.get("parts", [{}])[0].get("text") == "Hi"):
+            # parts 可能为空列表（Pydantic 不强制非空），需安全取第一个元素
+            parts = content.get("parts") or [{}]
+            first_part = parts[0] if parts else {}
+            if content.get("role") == "user" and first_part.get("text") == "Hi":
                 return True
     
     elif format == "anthropic":

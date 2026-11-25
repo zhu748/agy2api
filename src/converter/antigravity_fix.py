@@ -318,6 +318,7 @@ def _ensure_empty_tool_schema_for_claude(tools: Any, model_name: str) -> Any:
     is_claude = "claude" in (model_name or "").lower()
 
     if is_claude:
+        default_schema = {"type": "object", "properties": {}}
         normalized_tools = []
         for tool in tools:
             if not isinstance(tool, dict):
@@ -326,36 +327,53 @@ def _ensure_empty_tool_schema_for_claude(tools: Any, model_name: str) -> Any:
 
             normalized_tool = tool.copy()
 
-            schema = {"type": "object", "properties": {}}
-            name = ""
-            description = ""
-
-            # Extract schema from either format
+            # Anthropic 原生 "custom" 工具格式 → 单条 functionDeclarations
             custom_tool = normalized_tool.get("custom")
             if isinstance(custom_tool, dict):
-                schema = custom_tool.get("input_schema") or custom_tool.get("inputSchema") or schema
-                name = custom_tool.get("name", "")
-                description = custom_tool.get("description", "")
-            else:
-                declarations = normalized_tool.get("functionDeclarations") or normalized_tool.get("function_declarations")
-                if isinstance(declarations, list) and declarations and isinstance(declarations[0], dict):
-                    decl = declarations[0]
+                schema = custom_tool.get("input_schema") or custom_tool.get("inputSchema") or default_schema
+                normalized_tools.append({
+                    "functionDeclarations": [{
+                        "name": custom_tool.get("name", ""),
+                        "description": custom_tool.get("description", ""),
+                        "parameters": schema
+                    }]
+                })
+                continue
+
+            # functionDeclarations 格式：遍历全部声明（此前的实现只取
+            # declarations[0]，OpenAI 格式的多个工具会被打包进同一个
+            # tool dict，导致除第一个工具外的其余工具全部丢失）
+            declarations = normalized_tool.get("functionDeclarations") or normalized_tool.get("function_declarations")
+            new_declarations = []
+            if isinstance(declarations, list):
+                for declaration in declarations:
+                    if not isinstance(declaration, dict):
+                        continue
                     schema = (
-                        decl.get("parametersJsonSchema") or
-                        decl.get("parameters_json_schema") or
-                        decl.get("parameters") or schema
+                        declaration.get("parametersJsonSchema")
+                        or declaration.get("parameters_json_schema")
+                        or declaration.get("parameters")
                     )
-                    name = decl.get("name", "")
-                    description = decl.get("description", "")
+                    if schema in (None, {}, []):
+                        schema = default_schema
+                    new_declarations.append({
+                        "name": declaration.get("name", ""),
+                        "description": declaration.get("description", ""),
+                        "parameters": schema,
+                    })
+
+            if not new_declarations:
+                # 无有效声明：保留旧行为兜底（空名声明），不静默丢弃工具组
+                new_declarations = [{
+                    "name": "",
+                    "description": "",
+                    "parameters": default_schema,
+                }]
 
             # For ALL Claude models, try outputting functionDeclarations with parameters!
             # If Google's backend expects parameters to translate to input_schema, this will fix the Field required error.
             normalized_tools.append({
-                "functionDeclarations": [{
-                    "name": name,
-                    "description": description,
-                    "parameters": schema
-                }]
+                "functionDeclarations": new_declarations
             })
 
         return normalized_tools

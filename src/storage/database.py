@@ -24,7 +24,7 @@ from sqlalchemy import (
     select,
     text,
 )
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -318,44 +318,63 @@ class Database:
     async def store_credential(
         self, email: str, credential_data: Dict[str, Any]
     ) -> bool:
-        """存储或更新凭证（以 email 为唯一键，保留状态字段）"""
-        async with self.session() as s:
-            row = await s.scalar(
-                select(AntigravityCredential).where(AntigravityCredential.email == email)
-            )
-            access_token = credential_data.get("access_token") or credential_data.get("token") or ""
-            refresh_token = credential_data.get("refresh_token") or ""
-            client_id = credential_data.get("client_id") or ""
-            client_secret = credential_data.get("client_secret") or ""
-            project_id = credential_data.get("project_id") or ""
-            expiry_val = credential_data.get("expiry") or ""
-            expiry = expiry_val.isoformat() if hasattr(expiry_val, "isoformat") else str(expiry_val)
-            tier = credential_data.get("tier")
+        """存储或更新凭证（以 email 为唯一键，保留状态字段）。
 
-            if row:
-                row.access_token = access_token
-                row.refresh_token = refresh_token
-                row.client_id = client_id
-                row.client_secret = client_secret
-                row.project_id = project_id
-                row.expiry = expiry
-                if tier:
-                    row.tier = tier
-                row.updated_at = time.time()
-            else:
-                s.add(AntigravityCredential(
-                    email=email,
-                    access_token=access_token,
-                    refresh_token=refresh_token,
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    project_id=project_id,
-                    expiry=expiry,
-                    tier=tier or "pro",
-                    last_success=time.time(),
-                ))
+        并发导入同一 email 时可能同时走到插入分支，后提交方触发唯一键
+        冲突（IntegrityError）；此时回退为更新路径，保证幂等。"""
+        try:
+            async with self.session() as s:
+                await self._upsert_credential(s, email, credential_data)
             log.debug(f"Stored credential: {email}")
             return True
+        except IntegrityError:
+            # 并发竞态：另一请求已插入同一 email，改为更新
+            try:
+                async with self.session() as s:
+                    await self._upsert_credential(s, email, credential_data)
+                log.debug(f"Stored credential (after race): {email}")
+                return True
+            except Exception as e:
+                log.error(f"Error storing credential {email}: {e}")
+                return False
+
+    @staticmethod
+    async def _upsert_credential(s: AsyncSession, email: str, credential_data: Dict[str, Any]) -> None:
+        """在给定会话内执行凭证 upsert（不提交，由 session() 上下文统一提交）"""
+        row = await s.scalar(
+            select(AntigravityCredential).where(AntigravityCredential.email == email)
+        )
+        access_token = credential_data.get("access_token") or credential_data.get("token") or ""
+        refresh_token = credential_data.get("refresh_token") or ""
+        client_id = credential_data.get("client_id") or ""
+        client_secret = credential_data.get("client_secret") or ""
+        project_id = credential_data.get("project_id") or ""
+        expiry_val = credential_data.get("expiry") or ""
+        expiry = expiry_val.isoformat() if hasattr(expiry_val, "isoformat") else str(expiry_val)
+        tier = credential_data.get("tier")
+
+        if row:
+            row.access_token = access_token
+            row.refresh_token = refresh_token
+            row.client_id = client_id
+            row.client_secret = client_secret
+            row.project_id = project_id
+            row.expiry = expiry
+            if tier:
+                row.tier = tier
+            row.updated_at = time.time()
+        else:
+            s.add(AntigravityCredential(
+                email=email,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
+                project_id=project_id,
+                expiry=expiry,
+                tier=tier or "pro",
+                last_success=time.time(),
+            ))
 
     async def get_credential(
         self, email: str
@@ -387,9 +406,14 @@ class Database:
             return False
 
     async def get_next_available_credential(
-        self, model_name: Optional[str] = None
+        self,
+        model_name: Optional[str] = None,
+        exclude_emails: Optional[set] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """随机获取一个可用凭证（负载均衡 + 模型家族级冷却过滤），返回 (email, credential)"""
+        """随机获取一个可用凭证（负载均衡 + 模型家族级冷却过滤），返回 (email, credential)
+
+        exclude_emails：优先排除已尝试失败的凭证；若排除后无候选则回退
+        到全量候选（保留单凭证场景下的重试能力）。"""
         current_time = time.time()
         cd_group = get_cooldown_group(model_name) if model_name else None
         async with self.session() as s:
@@ -419,6 +443,11 @@ class Database:
                     candidates.append((email, model_cooldowns))
             if not candidates:
                 return None
+            # 优先排除本轮已尝试失败的凭证（排除后为空则回退全量候选）
+            if exclude_emails:
+                remaining = [c for c in candidates if c[0] not in exclude_emails]
+                if remaining:
+                    candidates = remaining
             picked_email = random.choice(candidates)[0]
             # 只取被选中凭证的完整数据
             row = await s.scalar(
@@ -514,7 +543,10 @@ class Database:
         cooldown_filter: Optional[str] = None,
         tier_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """凭证摘要（分页 + 状态筛选，内存过滤）"""
+        """凭证摘要（分页 + 状态筛选，内存过滤）。
+
+        只查询摘要所需的小字段：access_token / refresh_token 等大字段
+        （凭证明文可达数 KB）不参与加载，凭证量大时显著减少 IO 与内存。"""
         current_time = time.time()
         async with self.session() as s:
             total = await s.scalar(select(func.count()).select_from(AntigravityCredential)) or 0
@@ -523,12 +555,24 @@ class Database:
                 .where(AntigravityCredential.disabled == True)  # noqa: E712
             ) or 0
 
-            stmt = select(AntigravityCredential).order_by(AntigravityCredential.id)
+            # 列裁剪：不加载 access_token / refresh_token / client_* 大字段
+            stmt = (
+                select(
+                    AntigravityCredential.email,
+                    AntigravityCredential.disabled,
+                    AntigravityCredential.error_codes,
+                    AntigravityCredential.last_success,
+                    AntigravityCredential.model_cooldowns,
+                    AntigravityCredential.tier,
+                    AntigravityCredential.project_id,
+                )
+                .order_by(AntigravityCredential.id)
+            )
             if status_filter == "enabled":
                 stmt = stmt.where(AntigravityCredential.disabled == False)  # noqa: E712
             elif status_filter == "disabled":
                 stmt = stmt.where(AntigravityCredential.disabled == True)  # noqa: E712
-            rows = (await s.scalars(stmt)).all()
+            rows = (await s.execute(stmt)).all()
 
             filter_value = None
             filter_int = None
@@ -598,6 +642,29 @@ class Database:
                     "disabled": disabled_count,
                 },
             }
+
+    async def get_all_credentials_export(self) -> List[Dict[str, Any]]:
+        """一次查询取出全部凭证的导出字段（凭据 + 状态），供面板打包导出使用。
+
+        相比逐个 get_credential + get_credential_state 的 2N 次查询，
+        这里只需 1 次全表扫描。"""
+        async with self.session() as s:
+            rows = (
+                await s.scalars(
+                    select(AntigravityCredential).order_by(AntigravityCredential.id)
+                )
+            ).all()
+            return [
+                {
+                    "email": r.email,
+                    "refresh_token": r.refresh_token or "",
+                    "access_token": r.access_token or "",
+                    "expiry": r.expiry or "",
+                    "tier": r.tier or "pro",
+                    "project_id": r.project_id or "",
+                }
+                for r in rows
+            ]
 
     async def get_credential_errors(self, email: str) -> Dict[str, Any]:
         """获取凭证的错误信息"""
@@ -705,31 +772,54 @@ class Database:
 
     async def insert_usage_log(self, entry: Dict[str, Any]) -> bool:
         """写入一条请求日志（失败仅告警，不影响主流程）"""
+        return await self.insert_usage_logs_batch([entry])
+
+    async def insert_usage_logs_batch(self, entries: List[Dict[str, Any]]) -> bool:
+        """批量写入请求日志（单事务；整批失败时回退为逐条写入，单条失败不影响其余）"""
+        if not entries:
+            return True
         try:
             async with self.session() as s:
-                s.add(UsageLog(
-                    created_at=entry.get("created_at") or time.time(),
-                    api_format=str(entry.get("api_format", "")),
-                    client_ip=str(entry.get("client_ip", "")),
-                    request_id=str(entry.get("request_id", "")),
-                    model_name=str(entry.get("model_name", "")),
-                    upstream_model_name=str(entry.get("upstream_model_name", "")),
-                    credential_email=str(entry.get("credential_email", "")),
-                    is_stream=bool(entry.get("is_stream", False)),
-                    status_code=int(entry.get("status_code", 0) or 0),
-                    success=bool(entry.get("success", False)),
-                    use_time=float(entry.get("use_time", 0.0) or 0.0),
-                    prompt_tokens=int(entry.get("prompt_tokens", 0) or 0),
-                    completion_tokens=int(entry.get("completion_tokens", 0) or 0),
-                    total_tokens=int(entry.get("total_tokens", 0) or 0),
-                    cached_tokens=int(entry.get("cached_tokens", 0) or 0),
-                    error_message=str(entry.get("error_message", ""))[:2000],
-                    request_log_file=str(entry.get("request_log_file", ""))[:512],
-                ))
-                return True
-        except SQLAlchemyError as e:
-            log.warning(f"写入请求日志失败: {e}")
-            return False
+                s.add_all([self._build_usage_log_row(entry) for entry in entries])
+            return True
+        except SQLAlchemyError as batch_err:
+            log.warning(f"批量写入请求日志失败，回退为逐条写入: {batch_err}")
+        except (TypeError, ValueError) as build_err:
+            # 个别条目字段非法导致行构建失败：逐条写入，坏条目单独告警
+            log.warning(f"请求日志批量构建失败，回退为逐条写入: {build_err}")
+
+        ok = True
+        for entry in entries:
+            try:
+                async with self.session() as s:
+                    s.add(self._build_usage_log_row(entry))
+            except Exception as e:
+                log.warning(f"写入请求日志失败: {e}")
+                ok = False
+        return ok
+
+    @staticmethod
+    def _build_usage_log_row(entry: Dict[str, Any]) -> UsageLog:
+        """把日志字典转换为 UsageLog ORM 行（字段非法时抛出，由调用方处理）"""
+        return UsageLog(
+            created_at=entry.get("created_at") or time.time(),
+            api_format=str(entry.get("api_format", "")),
+            client_ip=str(entry.get("client_ip", "")),
+            request_id=str(entry.get("request_id", "")),
+            model_name=str(entry.get("model_name", "")),
+            upstream_model_name=str(entry.get("upstream_model_name", "")),
+            credential_email=str(entry.get("credential_email", "")),
+            is_stream=bool(entry.get("is_stream", False)),
+            status_code=int(entry.get("status_code", 0) or 0),
+            success=bool(entry.get("success", False)),
+            use_time=float(entry.get("use_time", 0.0) or 0.0),
+            prompt_tokens=int(entry.get("prompt_tokens", 0) or 0),
+            completion_tokens=int(entry.get("completion_tokens", 0) or 0),
+            total_tokens=int(entry.get("total_tokens", 0) or 0),
+            cached_tokens=int(entry.get("cached_tokens", 0) or 0),
+            error_message=str(entry.get("error_message", ""))[:2000],
+            request_log_file=str(entry.get("request_log_file", ""))[:512],
+        )
 
     async def query_usage_logs(
         self,

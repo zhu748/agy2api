@@ -272,7 +272,7 @@ async def chat_completions(
                         real_model,
                         chunk.status_code
                     )
-                    yield f"data: {json.dumps(openai_error)}\n\n".encode('utf-8')
+                    yield f"data: {json.dumps(openai_error, ensure_ascii=False)}\n\n".encode('utf-8')
                 except Exception:
                     yield f"data: {json.dumps({'error': 'Stream error'})}\n\n".encode('utf-8')
                 yield b"data: [DONE]\n\n"

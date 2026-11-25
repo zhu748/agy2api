@@ -150,6 +150,17 @@ async def stream_generate_content(
     # 转换为字典
     normalized_dict = model_to_dict(gemini_request)
 
+    # 健康检查（与非流式端点保持一致，命中时短路返回固定 SSE 响应）
+    if is_health_check_request(normalized_dict, format="gemini"):
+        async def _health_check_stream():
+            payload = json.dumps(
+                create_health_check_response(format="gemini"), ensure_ascii=False
+            )
+            yield f"data: {payload}\n\n".encode("utf-8")
+            yield b"data: [DONE]\n\n"
+
+        return StreamingResponse(_health_check_stream(), media_type="text/event-stream")
+
     # 处理模型名称和功能检测
     use_anti_truncation = is_anti_truncation_model(model)
     real_model = get_base_model_from_feature_model(model)
@@ -218,9 +229,9 @@ async def stream_generate_content(
                 if chunk_str.startswith("data: "):
                     json_str = chunk_str[6:].strip()
 
-                    # 跳过 [DONE] 标记
+                    # 跳过 [DONE] 标记（补回 SSE 换行分隔符）
                     if json_str == "[DONE]":
-                        yield chunk
+                        yield b"data: [DONE]\n\n"
                         continue
 
                     try:
@@ -234,14 +245,15 @@ async def stream_generate_content(
                             # 重新构建SSE格式
                             yield f"data: {json.dumps(unwrapped_data, ensure_ascii=False)}\n\n".encode('utf-8')
                         else:
-                            # 已经是展开的格式，直接返回
-                            yield chunk
+                            # 已是展开的格式：补回 SSE 换行（aiter_lines 已剥离行尾换行，
+                            # 原样透传会与下一个事件粘连）
+                            yield f"data: {json_str}\n\n".encode('utf-8')
                     except json.JSONDecodeError:
-                        # JSON解析失败，直接返回原始chunk
-                        yield chunk
+                        # JSON解析失败，直接返回原始chunk（补回换行）
+                        yield f"data: {json_str}\n\n".encode('utf-8')
                 else:
-                    # 不是SSE格式，直接返回
-                    yield chunk
+                    # 不是SSE格式（含空行分隔符）：补回换行符还原 SSE 流
+                    yield (chunk_str + "\n").encode('utf-8')
             else:
                 # 其他类型，直接返回
                 yield chunk
@@ -279,7 +291,7 @@ async def stream_generate_content(
                 except Exception:
                     error_json = {"error": {"code": chunk.status_code, "message": "upstream error", "status": "ERROR"}}
                 log.error(f"[ANTIGRAVITY STREAM] 返回错误给客户端: status={chunk.status_code}, error={str(error_json)[:200]}")
-                yield f"data: {json.dumps(error_json)}\n\n".encode('utf-8')
+                yield f"data: {json.dumps(error_json, ensure_ascii=False)}\n\n".encode('utf-8')
                 yield b"data: [DONE]\n\n"
                 return
 
@@ -291,9 +303,9 @@ async def stream_generate_content(
                 if chunk_str.startswith("data: "):
                     json_str = chunk_str[6:].strip()
 
-                    # 跳过 [DONE] 标记
+                    # 跳过 [DONE] 标记（补回 SSE 换行分隔符）
                     if json_str == "[DONE]":
-                        yield chunk
+                        yield b"data: [DONE]\n\n"
                         continue
 
                     try:
@@ -307,14 +319,15 @@ async def stream_generate_content(
                             # 重新构建SSE格式
                             yield f"data: {json.dumps(unwrapped_data, ensure_ascii=False)}\n\n".encode('utf-8')
                         else:
-                            # 已经是展开的格式，直接返回
-                            yield chunk
+                            # 已是展开的格式：补回 SSE 换行（aiter_lines 已剥离行尾换行，
+                            # 原样透传会与下一个事件粘连导致客户端解析失败）
+                            yield f"data: {json_str}\n\n".encode('utf-8')
                     except json.JSONDecodeError:
-                        # JSON解析失败，直接返回原始chunk
-                        yield chunk
+                        # JSON解析失败，直接返回原始chunk（补回换行）
+                        yield f"data: {json_str}\n\n".encode('utf-8')
                 else:
-                    # 不是SSE格式，直接返回
-                    yield chunk
+                    # 不是SSE格式（含空行分隔符）：补回换行符还原 SSE 流
+                    yield (chunk_str + "\n").encode('utf-8')
 
     # ========== 根据模式选择生成器 ==========
     if use_anti_truncation:

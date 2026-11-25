@@ -6,6 +6,7 @@ Antigravity API Client - Handles communication with Google's Antigravity API
 import asyncio
 import hashlib
 import json
+import os
 import time
 import traceback
 import uuid
@@ -23,10 +24,9 @@ from config import (
 from log import log
 
 from src.credential_manager import (
-    add_credential,
     get_valid_credential,
 )
-from src.httpx_client import stream_post_async, post_async
+from src.httpx_client import safe_response_headers, stream_post_async, post_async
 from src.models import Model, model_to_dict
 from src.utils import get_antigravity_user_agent
 from src.session_cache import derive_session_key
@@ -494,8 +494,8 @@ async def stream_request(
                             except Exception:
                                 pass
 
-                        # 预热下一个凭证
-                        if next_cred_task is None and attempt < max_retries:
+                        # 预热下一个凭证（仅在重试开启时预热，避免重试关闭时白白浪费一次选取）
+                        if next_cred_task is None and attempt < max_retries and retry_config["retry_enabled"]:
                             next_cred_task = asyncio.create_task(
                                 get_valid_credential(
                                     model_name=model_name, session_key=session_key
@@ -818,13 +818,13 @@ async def non_stream_request(
                             media_type="application/json"
                         )
                 else:
-                    # 正常响应
+                    # 正常响应（过滤与已解压 body 矛盾的上游响应头）
                     await record_api_call_success(current_file, model_name=model_name)
                     await _log_result(200, True, response_content=response.content)
                     return Response(
                         content=response.content,
                         status_code=200,
-                        headers=dict(response.headers)
+                        headers=safe_response_headers(response.headers)
                     )
 
             # 失败 - 记录最后一次错误
@@ -832,7 +832,7 @@ async def non_stream_request(
                 last_error_response = Response(
                     content=response.content,
                     status_code=status_code,
-                    headers=dict(response.headers)
+                    headers=safe_response_headers(response.headers)
                 )
 
                 # 判断是否需要重试
@@ -855,8 +855,8 @@ async def non_stream_request(
                         except Exception:
                             pass
 
-                    # 并行预热下一个凭证,不阻塞当前处理
-                    if next_cred_task is None and attempt < max_retries:
+                    # 并行预热下一个凭证,不阻塞当前处理（仅在重试开启时预热）
+                    if next_cred_task is None and attempt < max_retries and retry_config["retry_enabled"]:
                         next_cred_task = asyncio.create_task(
                                 get_valid_credential(
                                     model_name=model_name, session_key=session_key
@@ -949,6 +949,27 @@ async def non_stream_request(
 _MODEL_FAMILY_WHITELIST = ("claude", "gemini", "gpt", "argon")
 
 
+# ==================== 模型列表缓存 ======================
+
+# fetchAvailableModels 每次调用都会消耗一次上游请求与一次凭证选取；
+# /v1/models、/v1beta/models 是客户端高频轮询端点，直接透传会放大配额消耗。
+# 这里对成功结果做 TTL 缓存（MODEL_LIST_CACHE_TTL 秒，0 关闭，默认 300）。
+_MODEL_LIST_CACHE: Dict[str, Any] = {"data": None, "expires": 0.0}
+
+
+def _get_model_list_cache_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv("MODEL_LIST_CACHE_TTL", "300")))
+    except (TypeError, ValueError):
+        return 300.0
+
+
+def invalidate_model_list_cache() -> None:
+    """清空模型列表缓存（凭证变更等场景可手动调用）"""
+    _MODEL_LIST_CACHE["data"] = None
+    _MODEL_LIST_CACHE["expires"] = 0.0
+
+
 def _is_listable_model(model_id: str) -> bool:
     """模型列表过滤：剔除 disabled 模型与白名单家族之外的杂牌模型"""
     lowered = (model_id or "").lower()
@@ -962,12 +983,20 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
     获取可用模型列表，返回符合 OpenAI API 规范的格式
     过滤规则：名字带 disabled 的不返回；名字不含 claude/gemini/gpt/argon 的不返回
 
+    成功结果做 TTL 缓存（MODEL_LIST_CACHE_TTL，默认 300 秒，0 关闭），
+    避免 /v1/models 高频轮询直接透传到上游放大配额消耗。
+
     Returns:
         模型列表，格式为字典列表
 
     Raises:
         返回空列表如果获取失败
     """
+    # 命中缓存直接返回
+    ttl = _get_model_list_cache_ttl()
+    if ttl > 0 and _MODEL_LIST_CACHE["data"] is not None and time.time() < _MODEL_LIST_CACHE["expires"]:
+        return _MODEL_LIST_CACHE["data"]
+
     # 获取凭证管理器和可用凭证
     cred_result = await get_valid_credential()
     if not cred_result:
@@ -1034,6 +1063,11 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
                 model_list.append(model_to_dict(claude_opus_model))
 
             log.info(f"[ANTIGRAVITY] Fetched {len(model_list)} available models")
+
+            # 成功结果写入 TTL 缓存（失败不缓存，下次请求重试上游）
+            if ttl > 0:
+                _MODEL_LIST_CACHE["data"] = model_list
+                _MODEL_LIST_CACHE["expires"] = time.time() + ttl
             return model_list
         else:
             log.error(f"[ANTIGRAVITY] Failed to fetch models ({response.status_code}): {response.text[:500]}")

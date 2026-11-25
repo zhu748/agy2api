@@ -7,9 +7,8 @@
 import asyncio
 import io
 import json
-import time
 import zipfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Response
 from fastapi.responses import JSONResponse
@@ -354,42 +353,28 @@ async def download_all_creds_common() -> Response:
     zip_filename = "antigravity_credentials.zip"
 
     database = await get_database()
-    emails = await database.list_credentials()
+    # 单次查询取出全部导出字段（此前逐凭证 2 次查询，N 个凭证 = 2N 次会话开销）
+    export_items = await database.get_all_credentials_export()
 
-    if not emails:
+    if not export_items:
         raise HTTPException(status_code=404, detail="没有找到凭证")
 
-    log.info(f"开始打包 {len(emails)} 个凭证...")
+    log.info(f"开始打包 {len(export_items)} 个凭证...")
 
     zip_buffer = io.BytesIO()
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         success_count = 0
-        for email in emails:
+        for item in export_items:
             try:
-                state = await database.get_credential_state(email)
-                # 从凭证数据中取 refresh_token / access_token / expiry
-                cred = await database.get_credential(email)
-                if not cred:
-                    continue
-
-                export_data = {
-                    "refresh_token": cred.get("refresh_token", ""),
-                    "access_token": cred.get("access_token", ""),
-                    "expiry": cred.get("expiry", ""),
-                    "email": email,
-                    "tier": state.get("tier", "pro"),
-                    "project_id": state.get("project_id", ""),
-                }
-
-                content = json.dumps(export_data, ensure_ascii=False, indent=2)
-                zip_file.writestr(f"{email}.json", content)
+                content = json.dumps(item, ensure_ascii=False, indent=2)
+                zip_file.writestr(f"{item['email']}.json", content)
                 success_count += 1
             except Exception as e:
-                log.warning(f"导出凭证 {email} 时出错: {e}")
+                log.warning(f"导出凭证 {item.get('email')} 时出错: {e}")
                 continue
 
-    log.info(f"打包完成: 成功 {success_count}/{len(emails)} 个凭证")
+    log.info(f"打包完成: 成功 {success_count}/{len(export_items)} 个凭证")
 
     zip_buffer.seek(0)
     return Response(
@@ -514,8 +499,6 @@ async def creds_action(
         action = request.action
 
         log.info(f"Performing action '{action}' on credential: {email}")
-
-        database = await get_database()
 
         if action == "enable":
             result = await set_cred_disabled(email, False)

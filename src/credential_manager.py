@@ -6,7 +6,6 @@
 唯一的状态是 sticky 模式的当前粘性凭证指针（进程内模块级变量）。
 """
 
-import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -16,6 +15,7 @@ from config import get_credential_select_mode
 from src import session_cache
 from src.google_oauth_api import Credentials
 from src.storage.database import get_database
+from src.tasks import create_background_task
 
 # sticky 模式的当前粘性凭证（进程内唯一状态）
 _sticky_email: Optional[str] = None
@@ -76,8 +76,11 @@ async def get_valid_credential(
 
     # 通用随机选取（random 模式 / cache 未命中 / sticky 无可用粘性凭证）
     max_retries = 3
+    tried_emails: set = set()  # 本轮已尝试且刷新失败的凭证，优先不再重复选中
     for attempt in range(max_retries):
-        result = await database.get_next_available_credential(model_name=model_name)
+        result = await database.get_next_available_credential(
+            model_name=model_name, exclude_emails=tried_emails or None
+        )
 
         if not result:
             if attempt == 0:
@@ -95,6 +98,7 @@ async def get_valid_credential(
             log.warning(
                 f"Token刷新失败，尝试下一个凭证: {email} (attempt={attempt + 1}/{max_retries})"
             )
+            tried_emails.add(email)
             continue
 
         await _after_picked(mode, email, session_key)
@@ -188,7 +192,8 @@ async def record_api_call_result(
     database = await get_database()
     try:
         if success:
-            asyncio.create_task(database.record_success(email, model_name=model_name))
+            # fire-and-forget：持有任务引用防止被 GC 中途取消
+            create_background_task(database.record_success(email, model_name=model_name))
         elif error_code:
             error_messages = {}
             if error_message:
