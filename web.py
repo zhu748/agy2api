@@ -3,6 +3,7 @@ Main Web Integration - Integrates all routers and modules
 集合router并开启主服务
 """
 
+import json
 import os
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,9 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from log import log
+
+from src.keepalive import keepalive_service
+from src.tasks import create_background_task
 
 # Import managers and utilities
 # credential_manager 已重构为无状态函数模块（无需初始化/关闭）
@@ -92,6 +96,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning(f"会话凭证缓存初始化失败（使用内存后端）: {e}")
 
+    # 环境变量凭据注入（CREDENTIALS_JSON / CREDENTIALS_JSON_2..N）：
+    # 无持久磁盘的 PaaS 部署（Render Free 等）重启后凭据全丢，凭据放在
+    # 环境变量里每次启动自动重建（同 email 覆盖，幂等注入）。导入含
+    # OAuth 刷新等网络请求，放后台任务避免阻塞启动。
+    try:
+        _inject_credentials_from_env()
+    except Exception as e:
+        log.warning(f"环境变量凭据注入调度失败（不影响启动）: {e}")
+
+    # 出站保活（KEEPALIVE_URL，未配置时不启动、零开销，见 src/keepalive.py）：
+    # 定期 GET 目标 URL 自我唤醒，防 Render 等免费平台冻结闲置实例。
+    try:
+        await keepalive_service.start()
+    except Exception as e:
+        log.warning(f"保活服务启动失败（不影响主服务）: {type(e).__name__} - {e}")
+
     # OAuth回调服务器将在需要时按需启动
 
     yield
@@ -129,7 +149,78 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.debug(f"关闭会话缓存时出错: {e}")
 
+    # 停止出站保活任务（幂等；未启动时为空操作）
+    try:
+        await keepalive_service.stop()
+    except Exception as e:
+        log.debug(f"停止保活任务时出错: {e}")
+
     log.info("AGY2API 主服务已停止")
+
+
+def _collect_env_credentials() -> list[dict]:
+    """收集环境变量中的凭据 JSON（CREDENTIALS_JSON + 编号变量 _2..N）。
+
+    单个变量放 JSON 数组（多条凭据）或 JSON 对象（单条）；编号变量
+    CREDENTIALS_JSON_2、CREDENTIALS_JSON_3 ... 逐条追加，适合无法
+    传入超长环境变量的平台分批注入。解析失败的变量跳过并记日志。
+    """
+    payloads: list[dict] = []
+    names = ["CREDENTIALS_JSON"] + [
+        f"CREDENTIALS_JSON_{i}" for i in range(2, 51)
+    ]
+    for name in names:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError) as e:
+            log.warning(f"{name} 不是合法 JSON，已跳过: {e}")
+            continue
+        if isinstance(data, dict):
+            payloads.append(data)
+        elif isinstance(data, list):
+            payloads.extend(item for item in data if isinstance(item, dict))
+        else:
+            log.warning(f"{name} 必须是 JSON 对象或数组，已跳过")
+    return payloads
+
+
+def _inject_credentials_from_env() -> None:
+    """启动期凭据注入调度（fire-and-forget 后台任务，不阻塞启动）。
+
+    每条凭据走面板同款导入链路（_import_single_credential）：缺失字段
+    自动补齐、同 email 覆盖，天然幂等——重启即重建，适配无持久磁盘的
+    PaaS（Render Free 等）部署。
+    """
+    payloads = _collect_env_credentials()
+    if not payloads:
+        return
+
+    log.info(f"检测到环境变量凭据注入: {len(payloads)} 条，后台导入中")
+
+    async def _run_import() -> None:
+        # 循环依赖（panel.creds -> config -> ... 链上模块在 lifespan 阶段
+        # 可能尚未完全就绪），延迟导入
+        from src.panel.creds import _import_single_credential
+
+        ok = 0
+        for data in payloads:
+            try:
+                result = await _import_single_credential(data)
+                if result.get("status") == "success":
+                    ok += 1
+                else:
+                    log.warning(
+                        f"环境变量凭据导入失败 ({result.get('email', 'unknown')}): "
+                        f"{result.get('message', '未知原因')}"
+                    )
+            except Exception as e:
+                log.warning(f"环境变量凭据导入异常: {type(e).__name__} - {e}")
+        log.info(f"环境变量凭据注入完成: 成功 {ok}/{len(payloads)}")
+
+    create_background_task(_run_import())
 
 
 class IPWhitelistMiddleware:

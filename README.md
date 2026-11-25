@@ -145,6 +145,23 @@ docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PAS
     docker-compose up -d
     ```
 
+### Render 部署（Free 计划一键部署）
+
+> 适配 Render Blueprint（`render.yaml`），免费计划（512MB 内存、无持久磁盘、15 分钟无流量休眠）即可运行。
+
+**部署步骤**
+1. Fork / 推送本仓库到 GitHub
+2. [Render 控制台](https://dashboard.render.com) → New → Blueprint → 选择该仓库
+3. 按提示填写密钥变量（`sync: false` 项）：`PANEL_PASSWORD`、`API_PASSWORD`、`ANTIGRAVITY_CLIENT_ID/SECRET`、`CREDENTIALS_JSON`（凭据注入）等
+4. 部署完成后在 Render 面板把 `KEEPALIVE_URL` 填为 `https://<你的服务名>.onrender.com/healthz`，服务将每 60 秒自我唤醒，防止闲置休眠
+
+**Free 计划要点**
+- **无持久磁盘**：重启后面板配置与 SQLite 凭据库清空。凭据请用 `CREDENTIALS_JSON` 环境变量注入（重启自动重建，幂等覆盖）；需要固化的配置用环境变量下发；或配置 `POSTGRESQL_URI` 指向外部 PostgreSQL 持久化全部配置与日志
+- **健康检查**：`/healthz`（无鉴权、零依赖端点，供 Render 探活与保活自唤醒共用）
+- **端口**：Render 注入 `PORT` 环境变量，服务自动适配，无需配置
+- **保活**：`KEEPALIVE_URL` + `KEEPALIVE_INTERVAL`（详见下方"保活配置"）；注意开启 IP 白名单会拦截 Render 的健康检查导致部署失败，公网部署请勿启用
+- **升级持久化**：改用 starter 计划时，在 `render.yaml` 中恢复 `disk` 段注释即可挂载持久磁盘（SQLite 跨重启保留，可不再依赖凭据注入）
+
 ## 核心功能
 
 ### 🔄 API 端点和格式支持
@@ -236,6 +253,11 @@ docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PAS
 - `PORT`: 服务端口（默认：7861）
 - `HOST`: 服务器监听地址（默认：127.0.0.1，仅本地回环；需局域网/公网访问或 Docker 映射时设为 0.0.0.0，Docker 镜像已内置 0.0.0.0）
 
+**保活配置**
+- `KEEPALIVE_URL`: 出站保活目标 URL（默认：空，不启动）。定期 GET 该地址，防 Render / HuggingFace Space 等免费 PaaS 冻结闲置实例；典型用法：填自己的公网地址自我唤醒，如 `https://your-app.onrender.com/healthz`（本服务自带无鉴权 `/healthz` 端点）。校验：仅允许 http(s)、拒绝内嵌凭据与云元数据/链路本地地址、重定向目标复检（最多跟随 5 次）；请求直连不走 `PROXY`；单次失败只记日志不影响服务
+- `KEEPALIVE_INTERVAL`: 保活请求间隔，秒（默认：60，下限：5，低于下限不启动）
+- `KEEPALIVE_ALLOW_PRIVATE`: 允许私网/环回保活目标（默认：false，拒绝，防内网探测；仅本机/内网监控场景显式开启）
+
 **密码配置**
 - `API_PASSWORD`: 聊天 API 访问密码（默认：pwd；弱/默认密码启动时会告警）
 - `PANEL_PASSWORD`: 控制面板访问密码（默认：pwd；保存到数据库时自动哈希存储，面板登录签发 24 小时会话令牌）
@@ -252,6 +274,7 @@ docker run -d --name agy2api --network host -e API_PASSWORD=api_pwd -e PANEL_PAS
 **存储配置**
 - `CREDENTIALS_DIR`: 凭证数据库目录（默认：./creds）
 - `POSTGRESQL_URI`: PostgreSQL 连接字符串（设置后启用 PostgreSQL 模式）
+- `CREDENTIALS_JSON`: 环境变量凭据注入（默认：空）。无持久磁盘的 PaaS 部署（Render Free 等）重启后凭据全丢，凭据放在环境变量里每次启动自动重建（同 email 覆盖，幂等；导入走面板同款链路，缺失字段自动获取）。格式为 JSON 对象（单条）或 JSON 数组（多条），仅 `refresh_token` 必填，例：`[{"refresh_token": "1//0abc...", "email": "a@gmail.com"}]`；超长可分批：`CREDENTIALS_JSON_2`、`CREDENTIALS_JSON_3` ... 逐条追加
 
 **网络和代理配置**
 - `PROXY`: 代理地址（支持 `http://`、`https://`、`socks5://`、`socks5h://`，可带账号密码 `user:pass@host:port`）

@@ -5,7 +5,7 @@
 import os
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from log import log
 
@@ -27,6 +27,21 @@ def _safe_join_dist(path: str) -> str:
     if not full.startswith(dist_root + os.sep) and full != dist_root:
         raise HTTPException(status_code=404, detail="Not Found")
     return full
+
+
+@router.get("/healthz", include_in_schema=False)
+async def healthz():
+    """无鉴权健康检查端点（遵循 Kubernetes / PaaS 探活命名惯例）。
+
+    供 Render / Fly.io / k8s 等平台的 healthCheckPath 探活，以及
+    出站保活（KEEPALIVE_URL）自我唤醒使用。刻意不触上游、不查数据库、
+    不做鉴权——探活请求必须零依赖零副作用，否则平台会因健康检查
+    失败而反复重启实例。
+    """
+    return JSONResponse(
+        content={"status": "ok"},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/", response_class=HTMLResponse)
