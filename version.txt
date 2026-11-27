@@ -1,4 +1,4 @@
-full_hash=b48bbd841217f42d1ea854a83ad3ff1de0a726a1
-short_hash=b48bbd8
-message=fix(oauth): 凭证保存校验写库结果并回读，修复提示已保存但未入库的静默失败
-date=2026-11-27 20:45:07 +0800
+full_hash=94a40ef183ad04e18fc0411b75051718e7224e3d
+short_hash=94a40ef
+message=feat(panel): 新增运行日志页，错误面板内直接可查；移除二维码
+date=2026-11-27 21:04:11 +0800
