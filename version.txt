@@ -1,4 +1,4 @@
-full_hash=7055f2c9250dcf17b7b3caeb66332e32cdb9ce5d
-short_hash=7055f2c
-message=docs: 标注本镜像已去除原项目凭据
-date=2026-11-21 13:34:15 +0800
+full_hash=b48bbd841217f42d1ea854a83ad3ff1de0a726a1
+short_hash=b48bbd8
+message=fix(oauth): 凭证保存校验写库结果并回读，修复提示已保存但未入库的静默失败
+date=2026-11-27 20:45:07 +0800
