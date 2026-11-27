@@ -40,7 +40,7 @@ export default function OAuth() {
       setCredsContent(JSON.stringify(res.data.credentials, null, 2));
       setMessage({
         type: "success",
-        text: `认证成功！凭证已保存：${res.data.email || "未知邮箱"}`,
+        text: `认证成功！凭证已保存：${res.data.email || "未知邮箱"}${res.data.storage_warning || ""}`,
       });
     } catch (err) {
       setMessage({
@@ -65,7 +65,7 @@ export default function OAuth() {
       setCredsContent(JSON.stringify(res.data.credentials, null, 2));
       setMessage({
         type: "success",
-        text: `认证成功！凭证已保存：${res.data.email || "未知邮箱"}`,
+        text: `认证成功！凭证已保存：${res.data.email || "未知邮箱"}${res.data.storage_warning || ""}`,
       });
     } catch (err) {
       setMessage({

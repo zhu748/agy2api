@@ -358,7 +358,28 @@ async def _save_antigravity_credential(
         credentials, project_id, subscription_tier=subscription_tier
     )
     creds_data["tier"] = subscription_tier
-    await database.store_credential(email, creds_data)
+    stored = await database.store_credential(email, creds_data)
+    if not stored:
+        _cleanup_auth_flow_server(state)
+        log.error(f"Antigravity OAuth认证失败：凭证写入数据库失败 {email}")
+        return {
+            "success": False,
+            "error": (
+                "凭证写入数据库失败，凭证未保存！请查看服务日志中的"
+                "「写入凭证失败」记录定位数据库错误（常见原因：POSTGRESQL_URI "
+                "未配置或不可达、数据库连接数/权限问题）。"
+            ),
+        }
+
+    # 回读校验：确保凭证真实入库，杜绝任何静默写失败被误报为成功
+    saved = await database.get_credential(email)
+    if not saved or not (saved.get("refresh_token") or saved.get("access_token")):
+        _cleanup_auth_flow_server(state)
+        log.error(f"Antigravity OAuth认证失败：凭证写入后回读不到 {email}")
+        return {
+            "success": False,
+            "error": "凭证写入数据库后回读失败，凭证未真正入库。请查看服务日志。",
+        }
 
     # 创建默认状态记录
     try:
@@ -369,8 +390,11 @@ async def _save_antigravity_credential(
             "tier": subscription_tier,
             "project_id": project_id,
         }
-        await database.update_credential_state(email, default_state)
-        log.info(f"凭证已保存: {email} (tier={subscription_tier})")
+        state_ok = await database.update_credential_state(email, default_state)
+        if state_ok:
+            log.info(f"凭证已保存: {email} (tier={subscription_tier})")
+        else:
+            log.warning(f"创建默认状态记录未生效 {email}（凭证行本身已写入）")
     except Exception as e:
         log.warning(f"创建默认状态记录失败 {email}: {e}")
 
@@ -384,7 +408,21 @@ async def _save_antigravity_credential(
         "email": email,
         "tier": subscription_tier,
         "auto_detected_project": bool(project_id),
+        "storage_backend": database.backend_type,
+        "storage_persistent": database.backend_type == "postgresql",
+        "storage_warning": _storage_persistence_warning(database.backend_type),
     }
+
+
+def _storage_persistence_warning(backend: str) -> str:
+    """临时存储（SQLite）时返回持久化警示文案；持久化后端返回空串。"""
+    if backend == "postgresql":
+        return ""
+    return (
+        "。⚠️ 注意：当前使用临时 SQLite 存储，服务重启/重新部署/休眠唤醒后"
+        "新增凭证会丢失！请配置 POSTGRESQL_URI（外部 PostgreSQL）持久化，"
+        "或把此凭据加入 CREDENTIALS_JSON 环境变量以随启动自动恢复。"
+    )
 
 
 async def asyncio_complete_auth_flow(

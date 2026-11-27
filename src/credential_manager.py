@@ -134,11 +134,15 @@ async def _after_picked(mode: str, email: str, session_key: Optional[str]) -> No
 
 # ====================== 凭证增删改 ======================
 
-async def add_credential(email: str, credential_data: Dict[str, Any]):
-    """新增或更新凭证（同 email 覆盖，自动去重）"""
+async def add_credential(email: str, credential_data: Dict[str, Any]) -> bool:
+    """新增或更新凭证（同 email 覆盖，自动去重）；返回是否写入成功"""
     database = await get_database()
-    await database.store_credential(email, credential_data)
-    log.info(f"Credential added/updated: {email}")
+    ok = await database.store_credential(email, credential_data)
+    if ok:
+        log.info(f"Credential added/updated: {email}")
+    else:
+        log.error(f"Credential write failed: {email}（数据库写入未生效）")
+    return ok
 
 
 async def remove_credential(email: str) -> bool:

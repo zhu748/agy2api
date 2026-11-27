@@ -138,7 +138,14 @@ async def _import_single_credential(data: Dict[str, Any]) -> Dict[str, Any]:
             "tier": tier,
         }
 
-        await add_credential(email, credential_data)
+        stored = await add_credential(email, credential_data)
+        if not stored:
+            return {
+                "status": "error",
+                "email": email,
+                "message": "凭证写入数据库失败（请查看服务日志「写入凭证失败」记录，"
+                           "检查 POSTGRESQL_URI 等数据库配置）",
+            }
         return {
             "status": "success",
             "email": email,

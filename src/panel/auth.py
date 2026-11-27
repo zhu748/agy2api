@@ -101,6 +101,9 @@ async def auth_callback(request: AuthCallbackRequest, token: str = Depends(verif
                     "tier": result.get("tier"),
                     "message": "认证成功，凭证已保存",
                     "auto_detected_project": result.get("auto_detected_project", False),
+                    "storage_backend": result.get("storage_backend", ""),
+                    "storage_persistent": result.get("storage_persistent", True),
+                    "storage_warning": result.get("storage_warning", ""),
                 }
             )
         else:
@@ -153,6 +156,9 @@ async def auth_callback_url(request: AuthCallbackUrlRequest, token: str = Depend
                     "tier": result.get("tier"),
                     "message": "从回调URL认证成功，凭证已保存",
                     "auto_detected_project": result.get("auto_detected_project", False),
+                    "storage_backend": result.get("storage_backend", ""),
+                    "storage_persistent": result.get("storage_persistent", True),
+                    "storage_warning": result.get("storage_warning", ""),
                 }
             )
         else:

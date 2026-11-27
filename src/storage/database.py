@@ -233,6 +233,14 @@ class Database:
                     cursor.close()
 
                 self._backend_type = "sqlite"
+                log.warning(
+                    "未配置 POSTGRESQL_URI：当前使用临时 SQLite 存储（"
+                    f"{db_path}）。容器重启 / 重新部署 / 平台休眠唤醒后，"
+                    "OAuth 新增凭证与面板配置将全部丢失！PaaS（Render Free 等）"
+                    "部署请配置 POSTGRESQL_URI 指向外部 PostgreSQL 实现持久化，"
+                    "或把需要长期保留的凭据放入 CREDENTIALS_JSON 环境变量"
+                    "（每次启动自动重新注入）。"
+                )
 
             self._session_factory = async_sessionmaker(
                 self._engine, expire_on_commit=False, class_=AsyncSession
@@ -315,28 +323,39 @@ class Database:
 
     # ---------- 凭证管理 ----------
 
+    @property
+    def backend_type(self) -> str:
+        """当前数据库后端类型（sqlite / postgresql）"""
+        return self._backend_type
+
     async def store_credential(
         self, email: str, credential_data: Dict[str, Any]
     ) -> bool:
         """存储或更新凭证（以 email 为唯一键，保留状态字段）。
 
         并发导入同一 email 时可能同时走到插入分支，后提交方触发唯一键
-        冲突（IntegrityError）；此时回退为更新路径，保证幂等。"""
+        冲突（IntegrityError）；此时回退为更新路径，保证幂等。
+        任何数据库错误都不向外抛出：记录真实错误并返回 False，由调用方
+        决定如何呈现（避免"提示保存成功但实际未入库"的静默失败）。"""
         try:
             async with self.session() as s:
                 await self._upsert_credential(s, email, credential_data)
             log.debug(f"Stored credential: {email}")
             return True
-        except IntegrityError:
+        except IntegrityError as e:
             # 并发竞态：另一请求已插入同一 email，改为更新
+            log.warning(f"凭证写入触发唯一键冲突，回退为更新路径 {email}: {e}")
             try:
                 async with self.session() as s:
                     await self._upsert_credential(s, email, credential_data)
                 log.debug(f"Stored credential (after race): {email}")
                 return True
-            except Exception as e:
-                log.error(f"Error storing credential {email}: {e}")
+            except Exception as retry_err:
+                log.error(f"写入凭证失败 {email}（重试更新路径同样失败）: {retry_err}")
                 return False
+        except Exception as e:
+            log.error(f"写入凭证失败 {email}: {type(e).__name__} - {e}")
+            return False
 
     @staticmethod
     async def _upsert_credential(s: AsyncSession, email: str, credential_data: Dict[str, Any]) -> None:
