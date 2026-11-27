@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from log import log
+from log import install_logging_capture, log
 
 from src.keepalive import keepalive_service
 from src.tasks import create_background_task
@@ -36,6 +36,13 @@ from src.panel import router as panel_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    # 面板"运行日志"捕获：把 uvicorn/标准 logging 桥接到环形缓冲。
+    # 必须在 uvicorn 完成 logging 配置之后执行，故放 lifespan 启动阶段
+    try:
+        install_logging_capture()
+    except Exception as e:
+        log.warning(f"运行日志捕获初始化失败（不影响启动）: {e}")
+
     log.info("启动 AGY2API 主服务")
 
     # 启动期安全自检：弱密码/暴露面组合告警

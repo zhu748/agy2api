@@ -6,6 +6,7 @@ import {
     Upload,
     Info,
     BarChart3,
+    FileText,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import api from "./api";
@@ -16,6 +17,7 @@ import UploadPage from "./pages/Upload";
 import Config from "./pages/Config";
 import About from "./pages/About";
 import UsageLogs from "./pages/UsageLogs";
+import Logs from "./pages/Logs";
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(() => !!localStorage.getItem("panelToken"));
@@ -53,6 +55,7 @@ export default function App() {
     { id: "credentials", label: "凭证管理", icon: KeyRound },
     { id: "upload", label: "批量导入", icon: Upload },
     { id: "usage-logs", label: "请求日志", icon: BarChart3 },
+    { id: "logs", label: "运行日志", icon: FileText },
     { id: "config", label: "配置管理", icon: Settings },
     { id: "about", label: "项目信息", icon: Info },
   ];
@@ -108,6 +111,7 @@ export default function App() {
         {activeTab === "credentials" && <Credentials />}
         {activeTab === "upload" && <UploadPage />}
         {activeTab === "usage-logs" && <UsageLogs />}
+        {activeTab === "logs" && <Logs />}
         {activeTab === "config" && <Config />}
         {activeTab === "about" && <About version={version} onCheckUpdate={checkUpdate} checkingUpdate={checkingUpdate} />}
       </div>

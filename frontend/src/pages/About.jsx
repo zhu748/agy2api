@@ -130,20 +130,6 @@ export default function About({ version, onCheckUpdate, checkingUpdate }) {
         </div>
       </div>
 
-      {/* 交流群 */}
-      <div className="card text-center">
-        <h3 className="text-lg font-semibold text-blue-400 mb-4">💬 交流群</h3>
-        <p className="text-gray-400 text-sm mb-3">欢迎加入 QQ 群交流讨论！</p>
-        <div className="inline-block bg-white rounded-xl p-3">
-          <img
-            src={`${getBasePath()}docs/qq-group.jpg`}
-            alt="QQ 群二维码"
-            className="w-40 h-40 rounded-lg"
-          />
-        </div>
-        <p className="text-blue-400 font-semibold mt-3">QQ 群号：1083250744</p>
-      </div>
-
       {/* 使用声明 */}
       <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-5">
         <div className="text-amber-400 font-medium mb-2">⚠️ 使用声明</div>
