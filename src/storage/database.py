@@ -1,7 +1,12 @@
 """
 数据库层（SQLAlchemy 2.0 异步 ORM）
 统一支持 SQLite（默认）与 PostgreSQL。
-凭证以 email 为唯一键；schema 变更不做旧数据兼容（新表直接重建）。
+凭证以 email 为唯一键。schema 兼容策略（全部保留数据）：
+- 表缺少模型列：启动时 ALTER TABLE ADD COLUMN 自动补齐
+- 表存在模型外的 NOT NULL 列（旧版本/其他部署创建，如 supported_models）：
+  启动时自动放宽——PostgreSQL 直接 DROP NOT NULL，SQLite 重建表并拷贝
+  共有列数据；写入路径遇到 NOT NULL 违反时也会触发一次自愈修复后重试
+- 键结构变更（filename -> email）：旧表结构不兼容，删除重建（数据无法迁移）
 """
 
 import asyncio
@@ -138,6 +143,19 @@ def _load_json(raw: Optional[str], default: Any) -> Any:
         return default
 
 
+def _brief_db_error(err: Exception) -> str:
+    """提取数据库错误的简短描述。
+
+    SQLAlchemy 的 DBAPI 错误 str() 会附带完整 SQL 语句与全部参数值
+    （含 access_token / refresh_token / client_secret 等凭据明文），
+    绝不能原样写入日志：这里只保留底层错误类型与消息，顶层错误描述
+    在 [SQL: 标记处截断。"""
+    orig = getattr(err, "orig", None)
+    if orig is not None:
+        return f"{type(orig).__name__}: {str(orig)[:300]}"
+    return f"{type(err).__name__}: {str(err).split('[SQL:')[0].strip()[:300]}"
+
+
 def _row_to_credential_dict(row: AntigravityCredential) -> Dict[str, Any]:
     """ORM 行 -> 凭证字典"""
     return {
@@ -246,9 +264,10 @@ class Database:
                 self._engine, expire_on_commit=False, class_=AsyncSession
             )
 
-            # 建表（不兼容旧结构：旧的 filename 键结构表会被重建为 email 键结构）
-            async with self._engine.begin() as conn:
-                await conn.run_sync(self._create_tables)
+            # schema 兼容迁移 + 建表（各步骤独立事务：PostgreSQL 中任一语句
+            # 出错会中止整个事务，无法在同一事务里"尽力而为"；单步失败仅
+            # 告警不阻断启动，写入路径还有 NOT NULL 违反自愈兜底）
+            await self._run_full_schema_migration()
 
             # 标记初始化完成（供 session() 使用），再加载配置缓存
             self._initialized = True
@@ -259,31 +278,55 @@ class Database:
             log.info(f"Database initialized (backend={self._backend_type})")
 
     def _create_tables(self, sync_conn) -> None:
-        """建表。
-        - 凭证表：结构性变更（键从 filename 变为 email）时删除重建
-        - 其余表：缺列时用 ALTER TABLE ADD COLUMN 补齐，保留原有数据
-        """
+        """按当前 ORM 结构建表（只创建缺失的表；已存在表的结构由迁移步骤处理）"""
+        Base.metadata.create_all(sync_conn)
+
+    # ---------- schema 兼容迁移 ----------
+
+    async def _safe_migration_step(self, step_name: str, step_fn, *args) -> Any:
+        """在独立事务中执行一个迁移步骤，失败仅告警（不阻断启动）。
+
+        PostgreSQL 中任一语句出错会中止当前事务，因此各步骤必须各自
+        独立事务，才能做到"尽力而为"式迁移。"""
+        try:
+            async with self._engine.begin() as conn:
+                return await conn.run_sync(step_fn, *args)
+        except Exception as e:
+            log.error(f"数据库迁移步骤「{step_name}」失败（跳过，不影响启动）: {_brief_db_error(e)}")
+            return None
+
+    async def _run_full_schema_migration(self) -> None:
+        """执行全部 schema 兼容迁移（幂等，可重复调用）"""
+        await self._safe_migration_step("删除旧版表结构", self._migrate_drop_legacy_table)
+        await self._safe_migration_step("补充缺失列", self._migrate_add_missing_columns)
+        await self._safe_migration_step("放宽多余 NOT NULL 列", self._migrate_relax_extra_not_null)
+        await self._safe_migration_step("建表", self._create_tables)
+
+    def _migrate_drop_legacy_table(self, sync_conn) -> None:
+        """删除 filename 键的旧版凭证表（键结构变更，数据无法迁移）"""
         inspector = inspect(sync_conn)
         table_name = AntigravityCredential.__tablename__
         if inspector.has_table(table_name):
             existing_columns = {c["name"] for c in inspector.get_columns(table_name)}
-            # 旧结构以 filename 为键、无 email 列 —— 删除重建（数据无法迁移）
             if "filename" in existing_columns or "email" not in existing_columns:
                 log.info("检测到旧版凭证表结构（filename 键），重建为 email 键结构")
-                sync_conn.execute(text(f"DROP TABLE {table_name}"))
+                sync_conn.execute(text(f'DROP TABLE "{table_name}"'))
 
-        # 已存在的表补齐缺失列（ALTER TABLE ADD COLUMN，保留数据）
-        for orm_model in (UsageLog,):
+    def _migrate_add_missing_columns(self, sync_conn) -> None:
+        """为已存在的表补齐 ORM 模型中缺失的列（ALTER TABLE ADD COLUMN，保留数据）"""
+        inspector = inspect(sync_conn)
+        dialect = inspector.bind.dialect
+        for orm_model in (AntigravityCredential, ConfigItem, UsageLog):
             table = orm_model.__table__
             if not inspector.has_table(table.name):
                 continue
             existing_columns = {c["name"] for c in inspector.get_columns(table.name)}
-            dialect = inspector.bind.dialect
             for column in table.columns:
                 if column.name in existing_columns:
                     continue
                 column_type = column.type.compile(dialect)
                 # 补列：有 server_default 用之；有 Python default 用字面量；否则 DEFAULT NULL
+                # （补充列不强制 NOT NULL，避免旧行无值导致 ALTER 失败）
                 if column.server_default is not None:
                     default_clause = f" DEFAULT {column.server_default.arg}"
                 elif column.default is not None and column.default.is_scalar:
@@ -291,11 +334,65 @@ class Database:
                 else:
                     default_clause = " DEFAULT NULL"
                 sync_conn.execute(
-                    text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} {column_type}{default_clause}")
+                    text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}{default_clause}')
                 )
                 log.info(f"表 {table.name} 补充列 {column.name} ({column_type})")
 
-        Base.metadata.create_all(sync_conn)
+    def _migrate_relax_extra_not_null(self, sync_conn) -> None:
+        """放宽"表里存在但 ORM 模型不认识"的 NOT NULL 列。
+
+        这类列通常由旧版本或其他部署变体创建（如 supported_models），
+        当前代码的 INSERT 不包含它们，NOT NULL 且无默认值会导致所有
+        凭证写入失败（NotNullViolationError）。处理策略：
+        - PostgreSQL：ALTER COLUMN DROP NOT NULL（保留数据，结构最小变更）
+        - SQLite：无法直接放宽约束，在同一事务内原地重建表（rename 旧表
+          -> 按当前模型建新表 -> 拷贝共有列 -> 删除旧表）
+        可为空 / 已有默认值的多余列无需处理（INSERT 缺省时自动填 NULL/默认值）。
+        """
+        inspector = inspect(sync_conn)
+        dialect_name = inspector.bind.dialect.name
+        for orm_model in (AntigravityCredential, ConfigItem, UsageLog):
+            table = orm_model.__table__
+            if not inspector.has_table(table.name):
+                continue
+            model_columns = {c.name for c in table.columns}
+            extra_not_null = [
+                c for c in inspector.get_columns(table.name)
+                if c["name"] not in model_columns
+                and not c.get("nullable", True)
+                and c.get("default") is None
+            ]
+            if not extra_not_null:
+                continue
+            extra_names = ", ".join(c["name"] for c in extra_not_null)
+            if dialect_name == "postgresql":
+                for col in extra_not_null:
+                    sync_conn.execute(text(
+                        f'ALTER TABLE "{table.name}" ALTER COLUMN "{col["name"]}" DROP NOT NULL'
+                    ))
+                log.warning(
+                    f"表 {table.name} 存在模型外的 NOT NULL 列（{extra_names}，"
+                    "旧版本/其他部署创建），已自动放宽为可空"
+                )
+            else:
+                legacy_name = f"{table.name}_legacy_{int(time.time())}"
+                sync_conn.execute(text(f'ALTER TABLE "{table.name}" RENAME TO "{legacy_name}"'))
+                # 旧表的命名索引跟随重命名仍占用索引名，必须先删除，
+                # 否则新表创建同名索引（idx_ag_disabled 等）会冲突
+                for legacy_idx in inspect(sync_conn).get_indexes(legacy_name):
+                    sync_conn.execute(text(f'DROP INDEX "{legacy_idx["name"]}"'))
+                table.create(sync_conn)  # 按当前模型结构（含索引/唯一键）建新表
+                legacy_columns = {c["name"] for c in inspect(sync_conn).get_columns(legacy_name)}
+                common = [c.name for c in table.columns if c.name in legacy_columns]
+                col_list = ", ".join(f'"{c}"' for c in common)
+                sync_conn.execute(text(
+                    f'INSERT INTO "{table.name}" ({col_list}) SELECT {col_list} FROM "{legacy_name}"'
+                ))
+                sync_conn.execute(text(f'DROP TABLE "{legacy_name}"'))
+                log.warning(
+                    f"表 {table.name} 存在模型外的 NOT NULL 列（{extra_names}），"
+                    f"已重建表并迁移 {len(common)} 列数据"
+                )
 
     async def close(self) -> None:
         if self._engine:
@@ -335,26 +432,65 @@ class Database:
 
         并发导入同一 email 时可能同时走到插入分支，后提交方触发唯一键
         冲突（IntegrityError）；此时回退为更新路径，保证幂等。
-        任何数据库错误都不向外抛出：记录真实错误并返回 False，由调用方
-        决定如何呈现（避免"提示保存成功但实际未入库"的静默失败）。"""
+        表结构漂移（旧版本/其他部署创建的表缺列或多余 NOT NULL 列）会
+        先自动修复表结构再重试一次。任何数据库错误都不向外抛出：记录
+        脱敏后的真实错误并返回 False，由调用方决定如何呈现（避免"提示
+        保存成功但实际未入库"的静默失败）。"""
         try:
             async with self.session() as s:
                 await self._upsert_credential(s, email, credential_data)
             log.debug(f"Stored credential: {email}")
             return True
         except IntegrityError as e:
+            # 优先自愈：多余 NOT NULL 列等表结构漂移，修复后重试；真正
+            # 唯一键冲突的并发竞态走下方更新路径
+            if await self._repair_and_retry(email, credential_data, e):
+                return True
             # 并发竞态：另一请求已插入同一 email，改为更新
-            log.warning(f"凭证写入触发唯一键冲突，回退为更新路径 {email}: {e}")
+            log.warning(f"凭证写入触发唯一键冲突，回退为更新路径 {email}: {_brief_db_error(e)}")
             try:
                 async with self.session() as s:
                     await self._upsert_credential(s, email, credential_data)
                 log.debug(f"Stored credential (after race): {email}")
                 return True
             except Exception as retry_err:
-                log.error(f"写入凭证失败 {email}（重试更新路径同样失败）: {retry_err}")
+                log.error(f"写入凭证失败 {email}（重试更新路径同样失败）: {_brief_db_error(retry_err)}")
                 return False
         except Exception as e:
-            log.error(f"写入凭证失败 {email}: {type(e).__name__} - {e}")
+            # NOT NULL 违反兜底自愈（个别驱动包装路径不同），其余如实记录简短错误
+            if await self._repair_and_retry(email, credential_data, e):
+                return True
+            log.error(f"写入凭证失败 {email}: {_brief_db_error(e)}")
+            return False
+
+    async def _repair_and_retry(
+        self, email: str, credential_data: Dict[str, Any], first_err: Exception
+    ) -> bool:
+        """表结构漂移自愈：修复后重试一次。
+
+        覆盖两类漂移（旧版本/其他部署创建的表）：
+        - 多余 NOT NULL 列（如 supported_models）→ NotNullViolationError
+        - 缺少模型列 → no such column (SQLite) / does not exist (PostgreSQL)
+        仅当错误确属表结构漂移时才执行修复（返回 False 表示不适用，
+        由调用方走原有处理路径）。"""
+        brief = _brief_db_error(first_err).lower()
+        schema_drift = (
+            "null value in column" in brief
+            or "not null constraint" in brief
+            or "no such column" in brief
+            or ("column" in brief and "does not exist" in brief)
+        )
+        if not schema_drift:
+            return False
+        log.warning(f"检测到表结构与代码不一致（缺列/多余 NOT NULL 列），自动修复后重试 {email}")
+        await self._run_full_schema_migration()
+        try:
+            async with self.session() as s:
+                await self._upsert_credential(s, email, credential_data)
+            log.info(f"表结构已自动修复，凭证写入成功 {email}")
+            return True
+        except Exception as retry_err:
+            log.error(f"写入凭证失败 {email}（表结构修复后重试仍失败）: {_brief_db_error(retry_err)}")
             return False
 
     @staticmethod
@@ -802,7 +938,7 @@ class Database:
                 s.add_all([self._build_usage_log_row(entry) for entry in entries])
             return True
         except SQLAlchemyError as batch_err:
-            log.warning(f"批量写入请求日志失败，回退为逐条写入: {batch_err}")
+            log.warning(f"批量写入请求日志失败，回退为逐条写入: {_brief_db_error(batch_err)}")
         except (TypeError, ValueError) as build_err:
             # 个别条目字段非法导致行构建失败：逐条写入，坏条目单独告警
             log.warning(f"请求日志批量构建失败，回退为逐条写入: {build_err}")
@@ -813,7 +949,7 @@ class Database:
                 async with self.session() as s:
                     s.add(self._build_usage_log_row(entry))
             except Exception as e:
-                log.warning(f"写入请求日志失败: {e}")
+                log.warning(f"写入请求日志失败: {_brief_db_error(e)}")
                 ok = False
         return ok
 
