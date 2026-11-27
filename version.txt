@@ -1,4 +1,4 @@
-full_hash=94a40ef183ad04e18fc0411b75051718e7224e3d
-short_hash=94a40ef
-message=feat(panel): 新增运行日志页，错误面板内直接可查；移除二维码
-date=2026-11-27 21:04:11 +0800
+full_hash=dde7d9305b140cc3047741be320a102826ef3a6e
+short_hash=dde7d93
+message=fix(db): 自动兼容旧版本表结构漂移，修复 supported_models NOT NULL 写入失败
+date=2026-11-27 21:25:30 +0800
