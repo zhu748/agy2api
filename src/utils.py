@@ -104,10 +104,18 @@ def _refresh_cli_version_in_background() -> None:
 _refresh_cli_version_in_background()
 
 # Antigravity OAuth Configuration
-# 本仓库不含任何真实凭据：从环境变量读取（.env 会被自动加载）。
-# 使用前请自行提供 Antigravity CLI 的 OAuth client id / secret。
-ANTIGRAVITY_CLIENT_ID = os.getenv("ANTIGRAVITY_CLIENT_ID", "REDACTED_CLIENT_ID")
-ANTIGRAVITY_CLIENT_SECRET = os.getenv("ANTIGRAVITY_CLIENT_SECRET", "REDACTED_CLIENT_SECRET")
+# 从环境变量读取（.env 会被自动加载），环境变量优先。
+# 默认值为官方 CLI v1.5.18 (linux-x64) 所用的 Google OAuth client 凭据，
+# 2026-11-27 从官方二进制提取，已经 Google token 端点与端到端授权验证。
+# 该凭据随官方 CLI 公开分发，属公开常量而非机密。
+ANTIGRAVITY_CLIENT_ID = os.getenv(
+    "ANTIGRAVITY_CLIENT_ID",
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+)
+ANTIGRAVITY_CLIENT_SECRET = os.getenv(
+    "ANTIGRAVITY_CLIENT_SECRET",
+    "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",
+)
 ANTIGRAVITY_SCOPES = [
     'https://www.googleapis.com/auth/cloud-platform',
     'https://www.googleapis.com/auth/userinfo.email',
